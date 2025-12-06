@@ -329,6 +329,10 @@ app.use("/api/driver", driverRoutes);
 app.use("/api/storage", storageRoutes);
 app.use("/api/vehicles", vehicleRoutes);
 
+// Calendar routes
+const calendarRoutes = require("./routes/calendarRoutes");
+app.use("/api/calendar", calendarRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict
