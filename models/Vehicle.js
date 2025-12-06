@@ -13,6 +13,14 @@ const vehicleSchema = new Schema(
       enum: ['truck', 'scooter', 'other'],
       required: true,
     },
+    truckTypeName: {
+      type: String,
+      trim: true,
+    },
+    scooterTypeName: {
+      type: String,
+      trim: true,
+    },
     // Common fields for both truck and scooter
     weightMaxKg: {
       type: Number,
@@ -89,7 +97,7 @@ const vehicleSchema = new Schema(
     // Status and availability
     status: {
       type: String,
-      enum: ['active', 'maintenance', 'inactive'],
+      enum: ['active', 'maintenance', 'inactive', 'incomplete'],
       default: 'active',
     },
     

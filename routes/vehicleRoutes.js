@@ -121,17 +121,30 @@ router.post('/', uploadFields, async (req, res) => {
     
     // Add dimension fields for truck
     if (req.body.vehicleType === 'truck') {
-      vehicleData.dimensions = {
-        heightCm: req.body.heightCm,
-        widthCm: req.body.widthCm,
-        lengthCm: req.body.lengthCm,
-      };
+      vehicleData.truckTypeName = req.body.truckTypeName;
+      vehicleData.maxPackageLength = req.body.maxPackageLength;
+      
+      // Handle dimensions object or separate fields
+      if (req.body.dimensions) {
+        vehicleData.dimensions = {
+          heightCm: req.body.dimensions.heightCm,
+          widthCm: req.body.dimensions.widthCm,
+          lengthCm: req.body.dimensions.lengthCm,
+        };
+      } else {
+        vehicleData.dimensions = {
+          heightCm: req.body.heightCm || req.body['dimensions[heightCm]'],
+          widthCm: req.body.widthCm || req.body['dimensions[widthCm]'],
+          lengthCm: req.body.lengthCm || req.body['dimensions[lengthCm]'],
+        };
+      }
     }
     
     // Add scooter-specific fields
     if (req.body.vehicleType === 'scooter') {
+      vehicleData.scooterTypeName = req.body.scooterTypeName;
       vehicleData.maxPackages = req.body.maxPackages;
-      vehicleData.volumeCapacityLiters = req.body.volumeCapacityLiters;
+      vehicleData.maxPackageLength = req.body.maxPackageLength || 100;
     }
     
     // Optional fields
@@ -164,8 +177,12 @@ router.post('/', uploadFields, async (req, res) => {
     // Set audit fields
     vehicleData.createdBy = req.body.createdBy || 'admin';
     
+    console.log('Creating vehicle with data:', JSON.stringify(vehicleData, null, 2));
+    
     const vehicle = new Vehicle(vehicleData);
     await vehicle.save();
+    
+    console.log('Vehicle created successfully:', vehicle._id);
     
     res.status(201).json({
       success: true,
@@ -174,12 +191,29 @@ router.post('/', uploadFields, async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating vehicle:', error);
+    console.error('Error details:', error.message);
+    if (error.errors) {
+      console.error('Validation errors:', error.errors);
+    }
     
     // Handle duplicate number plate error
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
         message: 'Number plate already exists',
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors).map(key => ({
+        field: key,
+        message: error.errors[key].message
+      }));
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors,
       });
     }
     
@@ -280,10 +314,10 @@ router.put('/:id', uploadFields, async (req, res) => {
   }
 });
 
-// DELETE /api/vehicles/:id - Soft delete vehicle
+// DELETE /api/vehicles/:id - Delete vehicle from database
 router.delete('/:id', async (req, res) => {
   try {
-    const vehicle = await Vehicle.findById(req.params.id);
+    const vehicle = await Vehicle.findByIdAndDelete(req.params.id);
     
     if (!vehicle) {
       return res.status(404).json({
@@ -292,14 +326,12 @@ router.delete('/:id', async (req, res) => {
       });
     }
     
-    // Soft delete by setting status to inactive
-    vehicle.status = 'inactive';
-    vehicle.updatedBy = req.body.updatedBy || 'admin';
-    await vehicle.save();
+    console.log('Vehicle deleted from database:', vehicle._id);
     
     res.json({
       success: true,
       message: 'Vehicle deleted successfully',
+      data: vehicle,
     });
   } catch (error) {
     console.error('Error deleting vehicle:', error);
