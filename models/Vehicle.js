@@ -3,6 +3,12 @@ const { Schema } = mongoose;
 
 const vehicleSchema = new Schema(
   {
+    // Link to template
+    templateId: {
+      type: Schema.Types.ObjectId,
+      ref: 'VehicleTemplate',
+    },
+    
     name: {
       type: String,
       required: true,

@@ -53,8 +53,8 @@ router.get('/', async (req, res) => {
     if (status) {
       query.status = status;
     } else {
-      // Default: only show active and maintenance vehicles
-      query.status = { $in: ['active', 'maintenance'] };
+      // Default: only show active and maintenance vehicles (exclude incomplete)
+      query.status = { $in: ['active', 'maintenance', 'inactive'] };
     }
     
     if (search) {
@@ -112,39 +112,73 @@ router.post('/', uploadFields, async (req, res) => {
   try {
     const vehicleData = {
       name: req.body.name,
-      vehicleType: req.body.vehicleType,
-      weightMaxKg: req.body.weightMaxKg,
-      loadLimitPercent: req.body.loadLimitPercent || 80,
       numberPlate: req.body.numberPlate,
       status: req.body.status || 'active',
     };
     
-    // Add dimension fields for truck
-    if (req.body.vehicleType === 'truck') {
-      vehicleData.truckTypeName = req.body.truckTypeName;
-      vehicleData.maxPackageLength = req.body.maxPackageLength;
+    // If templateId is provided, fetch template and copy specifications
+    if (req.body.templateId) {
+      const VehicleTemplate = require('../models/VehicleTemplate');
+      const template = await VehicleTemplate.findById(req.body.templateId);
       
-      // Handle dimensions object or separate fields
-      if (req.body.dimensions) {
-        vehicleData.dimensions = {
-          heightCm: req.body.dimensions.heightCm,
-          widthCm: req.body.dimensions.widthCm,
-          lengthCm: req.body.dimensions.lengthCm,
-        };
-      } else {
-        vehicleData.dimensions = {
-          heightCm: req.body.heightCm || req.body['dimensions[heightCm]'],
-          widthCm: req.body.widthCm || req.body['dimensions[widthCm]'],
-          lengthCm: req.body.lengthCm || req.body['dimensions[lengthCm]'],
-        };
+      if (!template) {
+        return res.status(404).json({
+          success: false,
+          message: 'Template not found',
+        });
       }
-    }
-    
-    // Add scooter-specific fields
-    if (req.body.vehicleType === 'scooter') {
-      vehicleData.scooterTypeName = req.body.scooterTypeName;
-      vehicleData.maxPackages = req.body.maxPackages;
-      vehicleData.maxPackageLength = req.body.maxPackageLength || 100;
+      
+      // Copy template specifications to vehicle
+      vehicleData.templateId = template._id;
+      vehicleData.vehicleType = template.vehicleType;
+      vehicleData.weightMaxKg = template.weightMaxKg;
+      vehicleData.maxPackageLength = template.maxPackageLength;
+      vehicleData.loadLimitPercent = template.loadLimitPercent;
+      
+      if (template.vehicleType === 'truck') {
+        vehicleData.truckTypeName = template.truckTypeName;
+        vehicleData.dimensions = {
+          heightCm: template.dimensions.heightCm,
+          widthCm: template.dimensions.widthCm,
+          lengthCm: template.dimensions.lengthCm,
+        };
+      } else if (template.vehicleType === 'scooter') {
+        vehicleData.scooterTypeName = template.scooterTypeName;
+        vehicleData.maxPackages = template.maxPackages;
+      }
+    } else {
+      // Legacy support: accept specifications directly (for backward compatibility)
+      vehicleData.vehicleType = req.body.vehicleType;
+      vehicleData.weightMaxKg = req.body.weightMaxKg;
+      vehicleData.loadLimitPercent = req.body.loadLimitPercent || 80;
+      
+      // Add dimension fields for truck
+      if (req.body.vehicleType === 'truck') {
+        vehicleData.truckTypeName = req.body.truckTypeName;
+        vehicleData.maxPackageLength = req.body.maxPackageLength;
+        
+        // Handle dimensions object or separate fields
+        if (req.body.dimensions) {
+          vehicleData.dimensions = {
+            heightCm: req.body.dimensions.heightCm,
+            widthCm: req.body.dimensions.widthCm,
+            lengthCm: req.body.dimensions.lengthCm,
+          };
+        } else {
+          vehicleData.dimensions = {
+            heightCm: req.body.heightCm || req.body['dimensions[heightCm]'],
+            widthCm: req.body.widthCm || req.body['dimensions[widthCm]'],
+            lengthCm: req.body.lengthCm || req.body['dimensions[lengthCm]'],
+          };
+        }
+      }
+      
+      // Add scooter-specific fields
+      if (req.body.vehicleType === 'scooter') {
+        vehicleData.scooterTypeName = req.body.scooterTypeName;
+        vehicleData.maxPackages = req.body.maxPackages;
+        vehicleData.maxPackageLength = req.body.maxPackageLength || 100;
+      }
     }
     
     // Optional fields

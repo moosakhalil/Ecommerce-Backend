@@ -112,6 +112,7 @@ const complaintRoutes = require("./routes/complaints");
 app.use("/api/vendor-preorders", vendorPreOrderRoutes);
 const driverRoutes = require("./routes/driverRoutes");
 const vehicleRoutes = require("./routes/vehicleRoutes");
+const vehicleTemplateRoutes = require("./routes/vehicleTemplateRoutes");
 app.use("/api/driver-on-delivery", driverOnDeliveryRoutes);
 
 // Add vendor routes to your existing routes
@@ -328,6 +329,7 @@ app.use("/api/complaints", complaintRoutes);
 app.use("/api/driver", driverRoutes);
 app.use("/api/storage", storageRoutes);
 app.use("/api/vehicles", vehicleRoutes);
+app.use("/api/vehicle-templates", vehicleTemplateRoutes);
 
 // Calendar routes
 const calendarRoutes = require("./routes/calendarRoutes");
