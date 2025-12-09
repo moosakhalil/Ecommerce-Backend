@@ -54,6 +54,12 @@ const vehicleSchema = new Schema(
     maxPackages: {
       type: Number,
     },
+    packageLimitPercent: {
+      type: Number,
+      default: 80,
+      min: 0,
+      max: 100,
+    },
     
     // Vehicle details
     fuelType: {

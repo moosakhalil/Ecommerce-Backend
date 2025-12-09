@@ -178,6 +178,7 @@ router.post('/', uploadFields, async (req, res) => {
         vehicleData.scooterTypeName = req.body.scooterTypeName;
         vehicleData.maxPackages = req.body.maxPackages;
         vehicleData.maxPackageLength = req.body.maxPackageLength || 100;
+        vehicleData.packageLimitPercent = req.body.packageLimitPercent || 80;
       }
     }
     
@@ -291,6 +292,7 @@ router.put('/:id', uploadFields, async (req, res) => {
     if (req.body.vehicleType === 'scooter' || vehicle.vehicleType === 'scooter') {
       if (req.body.maxPackages) vehicle.maxPackages = req.body.maxPackages;
       if (req.body.volumeCapacityLiters) vehicle.volumeCapacityLiters = req.body.volumeCapacityLiters;
+      if (req.body.packageLimitPercent !== undefined) vehicle.packageLimitPercent = req.body.packageLimitPercent;
     }
     
     // Update optional fields
