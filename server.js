@@ -92,6 +92,7 @@ const { router: adminAuthRouter } = require("./routes/adminAuth");
 
 const ordersRouter = require("./routes/orders");
 const employeeRoutes = require("./routes/employeeRoutes");
+const employeeRoleRoutes = require("./routes/employeeRoleRoutes");
 const supplierRoutes = require("./routes/supplierRoutes");
 const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
@@ -302,6 +303,7 @@ app.use("/api/admin", adminAuthRouter);
 
 // Regular routes
 app.use("/api/employees", employeeRoutes);
+app.use("/api/employee-roles", employeeRoleRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api", chatbotRouter);

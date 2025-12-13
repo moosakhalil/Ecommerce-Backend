@@ -14,7 +14,13 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  fileFilter: (req, file, cb) => {
+    // Accept all files
+    cb(null, true);
+  }
+});
 
 const uploadFields = [
   { name: "profilePicture", maxCount: 1 },
@@ -22,8 +28,11 @@ const uploadFields = [
   { name: "idCardBack", maxCount: 1 },
   { name: "passportFront", maxCount: 1 },
   { name: "passportBack", maxCount: 1 },
+  { name: "contractPdf", maxCount: 1 },
   { name: "otherDoc1", maxCount: 1 },
   { name: "otherDoc2", maxCount: 1 },
+  { name: "otherDoc3", maxCount: 1 },
+  { name: "otherDoc4", maxCount: 1 },
 ];
 
 // ✅ GET: List all employees with filters
@@ -147,7 +156,12 @@ router.get("/:employeeId", async (req, res) => {
   try {
     const { employeeId } = req.params;
 
-    const employee = await Employee.findOne({ employeeId });
+    const employee = await Employee.findOne({ 
+      $or: [
+        { employeeId: employeeId },
+        { _id: employeeId }
+      ]
+    });
 
     if (!employee) {
       return res.status(404).json({
@@ -171,7 +185,18 @@ router.get("/:employeeId", async (req, res) => {
 });
 
 // ✅ POST: Create new employee
-router.post("/", upload.fields(uploadFields), async (req, res) => {
+router.post("/", (req, res, next) => {
+  upload.fields(uploadFields)(req, res, (err) => {
+    if (err) {
+      console.error("Multer error:", err);
+      return res.status(400).json({
+        success: false,
+        message: "File upload error: " + err.message,
+      });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const {
       name,
@@ -188,18 +213,11 @@ router.post("/", upload.fields(uploadFields), async (req, res) => {
       isBlocked,
     } = req.body;
 
-    console.log("=== CREATE EMPLOYEE ===");
-    console.log("Name:", name);
-    console.log("Email:", email);
-    console.log("Category:", employeeCategory);
-    console.log("Request body:", req.body);
-
     // Validate required fields
     if (
       !name ||
       !email ||
       !phone ||
-      !employeeCategory ||
       !address ||
       !homeLocation ||
       !emergencyContact
@@ -222,6 +240,15 @@ router.post("/", upload.fields(uploadFields), async (req, res) => {
         : JSON.parse(contacts)
       : [];
 
+    console.log("=== CREATE EMPLOYEE ===");
+    console.log("Name:", name);
+    console.log("Email:", email);
+    console.log("Category:", employeeCategory);
+    console.log("Contacts received:", contacts);
+    console.log("Contacts parsed:", contactsArray);
+    console.log("Request body:", req.body);
+    console.log("Files:", req.files);
+
     // Process uploaded files
     const fileData = {};
     if (req.files) {
@@ -240,12 +267,29 @@ router.post("/", upload.fields(uploadFields), async (req, res) => {
       if (req.files.passportBack) {
         fileData.passportBack = req.files.passportBack[0].path;
       }
+      if (req.files.contractPdf) {
+        fileData.contractPdf = req.files.contractPdf[0].path;
+      }
       if (req.files.otherDoc1) {
         fileData.otherDoc1 = req.files.otherDoc1[0].path;
       }
       if (req.files.otherDoc2) {
         fileData.otherDoc2 = req.files.otherDoc2[0].path;
       }
+      if (req.files.otherDoc3) {
+        fileData.otherDoc3 = req.files.otherDoc3[0].path;
+      }
+      if (req.files.otherDoc4) {
+        fileData.otherDoc4 = req.files.otherDoc4[0].path;
+      }
+    }
+
+    // Validate Contract PDF is uploaded (required for new employees)
+    if (!fileData.contractPdf) {
+      return res.status(400).json({
+        success: false,
+        message: "Contract PDF is required",
+      });
     }
 
     const employeeData = {
@@ -276,15 +320,29 @@ router.post("/", upload.fields(uploadFields), async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating employee:", error);
-    res.status(400).json({
+    console.error("Error stack:", error.stack);
+    console.error("Error details:", error);
+    res.status(500).json({
       success: false,
       message: error.message || "Error creating employee",
+      error: error.toString(),
     });
   }
 });
 
 // ✅ PUT: Update employee
-router.put("/:employeeId", upload.fields(uploadFields), async (req, res) => {
+router.put("/:employeeId", (req, res, next) => {
+  upload.fields(uploadFields)(req, res, (err) => {
+    if (err) {
+      console.error("Multer error:", err);
+      return res.status(400).json({
+        success: false,
+        message: "File upload error: " + err.message,
+      });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { employeeId } = req.params;
     const {
@@ -299,9 +357,15 @@ router.put("/:employeeId", upload.fields(uploadFields), async (req, res) => {
       contacts,
       isActivated,
       isBlocked,
+      permissions,
     } = req.body;
 
-    const employee = await Employee.findOne({ employeeId });
+    const employee = await Employee.findOne({ 
+      $or: [
+        { employeeId: employeeId },
+        { _id: employeeId }
+      ]
+    });
 
     if (!employee) {
       return res.status(404).json({
@@ -322,6 +386,10 @@ router.put("/:employeeId", upload.fields(uploadFields), async (req, res) => {
         : JSON.parse(contacts)
       : [];
 
+    console.log("=== UPDATE EMPLOYEE ===");
+    console.log("Contacts received:", contacts);
+    console.log("Contacts parsed:", contactsArray);
+
     // Update fields
     if (name) employee.name = name;
     if (email) employee.email = email;
@@ -335,6 +403,13 @@ router.put("/:employeeId", upload.fields(uploadFields), async (req, res) => {
     if (isActivated !== undefined)
       employee.isActivated = isActivated !== "false";
     if (isBlocked !== undefined) employee.isBlocked = isBlocked === "true";
+    
+    // Update permissions if provided
+    if (permissions !== undefined) {
+      employee.permissions = Array.isArray(permissions) 
+        ? permissions 
+        : JSON.parse(permissions);
+    }
 
     // Update uploaded files
     if (req.files) {
@@ -353,11 +428,20 @@ router.put("/:employeeId", upload.fields(uploadFields), async (req, res) => {
       if (req.files.passportBack) {
         employee.passportBack = req.files.passportBack[0].path;
       }
+      if (req.files.contractPdf) {
+        employee.contractPdf = req.files.contractPdf[0].path;
+      }
       if (req.files.otherDoc1) {
         employee.otherDoc1 = req.files.otherDoc1[0].path;
       }
       if (req.files.otherDoc2) {
         employee.otherDoc2 = req.files.otherDoc2[0].path;
+      }
+      if (req.files.otherDoc3) {
+        employee.otherDoc3 = req.files.otherDoc3[0].path;
+      }
+      if (req.files.otherDoc4) {
+        employee.otherDoc4 = req.files.otherDoc4[0].path;
       }
     }
 
@@ -688,6 +772,45 @@ router.get("/:employeeId/performance", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error fetching performance metrics",
+      error: error.message,
+    });
+  }
+});
+
+// ✅ DELETE: Delete employee
+router.delete("/:employeeId", async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+
+    console.log("=== DELETE EMPLOYEE ===");
+    console.log("Employee ID:", employeeId);
+
+    const employee = await Employee.findOneAndDelete({ 
+      $or: [
+        { employeeId: employeeId },
+        { _id: employeeId }
+      ]
+    });
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      });
+    }
+
+    console.log("Employee deleted:", employee.employeeId);
+
+    res.status(200).json({
+      success: true,
+      message: "Employee deleted successfully",
+      data: employee,
+    });
+  } catch (error) {
+    console.error("Error deleting employee:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error deleting employee",
       error: error.message,
     });
   }

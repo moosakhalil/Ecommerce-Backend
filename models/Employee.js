@@ -43,6 +43,8 @@ const EmployeeSchema = new mongoose.Schema(
         name: { type: String, required: true },
         relation: { type: String, required: true },
         phoneNumber: { type: String, required: true },
+        note: { type: String, required: true },
+        employeeId: { type: String, default: "" },
       },
     ],
     roles: {
@@ -83,11 +85,23 @@ const EmployeeSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    contractPdf: {
+      type: String,
+      default: null,
+    },
     otherDoc1: {
       type: String,
       default: null,
     },
     otherDoc2: {
+      type: String,
+      default: null,
+    },
+    otherDoc3: {
+      type: String,
+      default: null,
+    },
+    otherDoc4: {
       type: String,
       default: null,
     },
@@ -102,6 +116,12 @@ const EmployeeSchema = new mongoose.Schema(
     isBlocked: {
       type: Boolean,
       default: false,
+    },
+
+    // PERMISSIONS - Array of component IDs the employee can access
+    permissions: {
+      type: [Number],
+      default: [],
     },
 
     // PACKING STAFF SPECIFIC

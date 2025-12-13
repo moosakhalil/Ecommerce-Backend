@@ -113,6 +113,13 @@ const vehicleSchema = new Schema(
       default: 'active',
     },
     
+    // Assigned driver
+    assignedDriver: {
+      type: Schema.Types.ObjectId,
+      ref: 'Employee',
+      default: null,
+    },
+    
     // Audit fields
     createdBy: {
       type: String,

@@ -64,7 +64,9 @@ router.get('/', async (req, res) => {
       ];
     }
     
-    const vehicles = await Vehicle.find(query).sort({ createdAt: -1 });
+    const vehicles = await Vehicle.find(query)
+      .populate('assignedDriver', 'name email employeeId phone')
+      .sort({ createdAt: -1 });
     
     res.json({
       success: true,
@@ -279,6 +281,7 @@ router.put('/:id', uploadFields, async (req, res) => {
     if (req.body.loadLimitPercent !== undefined) vehicle.loadLimitPercent = req.body.loadLimitPercent;
     if (req.body.numberPlate) vehicle.numberPlate = req.body.numberPlate;
     if (req.body.status) vehicle.status = req.body.status;
+    if (req.body.assignedDriver !== undefined) vehicle.assignedDriver = req.body.assignedDriver;
     
     // Update dimensions for truck
     if (req.body.vehicleType === 'truck' || vehicle.vehicleType === 'truck') {
