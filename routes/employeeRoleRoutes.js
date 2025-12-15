@@ -97,6 +97,10 @@ router.put("/:roleId", async (req, res) => {
     const { roleId } = req.params;
     const { name, description, permissions } = req.body;
 
+    console.log("=== UPDATE EMPLOYEE ROLE ===");
+    console.log("Role ID:", roleId);
+    console.log("Request body:", { name, description, permissions });
+
     const role = await EmployeeRole.findById(roleId);
 
     if (!role) {
@@ -121,7 +125,10 @@ router.put("/:roleId", async (req, res) => {
     if (description !== undefined) role.description = description;
     if (permissions !== undefined) role.permissions = permissions;
 
+    console.log("Saving role with permissions:", role.permissions);
     await role.save();
+
+    console.log("✅ Role updated successfully");
 
     res.json({
       success: true,
@@ -129,11 +136,13 @@ router.put("/:roleId", async (req, res) => {
       role,
     });
   } catch (error) {
-    console.error("Error updating employee role:", error);
+    console.error("❌ Error updating employee role:", error);
+    console.error("Error stack:", error.stack);
     res.status(500).json({
       success: false,
       message: "Error updating employee role",
       error: error.message,
+      details: error.toString(),
     });
   }
 });

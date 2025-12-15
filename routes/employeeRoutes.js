@@ -375,11 +375,17 @@ router.put("/:employeeId", (req, res, next) => {
     }
 
     const phoneArray = typeof phone === "string" ? [phone] : phone || [];
-    const rolesArray = roles
-      ? Array.isArray(roles)
-        ? roles
-        : JSON.parse(roles)
-      : [];
+    // Handle roles - can come as roles[] array or roles string
+    let rolesArray = [];
+    if (req.body['roles[]']) {
+      rolesArray = Array.isArray(req.body['roles[]']) ? req.body['roles[]'] : [req.body['roles[]']];
+    } else if (roles) {
+      try {
+        rolesArray = Array.isArray(roles) ? roles : JSON.parse(roles);
+      } catch (e) {
+        rolesArray = [];
+      }
+    }
     const contactsArray = contacts
       ? Array.isArray(contacts)
         ? contacts

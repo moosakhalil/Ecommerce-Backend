@@ -13,7 +13,7 @@ const EmployeeRoleSchema = new mongoose.Schema(
       default: "",
     },
     permissions: {
-      type: [Number],
+      type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
   },

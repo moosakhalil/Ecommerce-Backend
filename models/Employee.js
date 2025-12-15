@@ -48,26 +48,12 @@ const EmployeeSchema = new mongoose.Schema(
       },
     ],
     roles: {
-      type: [String],
-      enum: [
-        "packing-staff",
-        "storage-officer",
-        "dispatch-officer-1",
-        "dispatch-officer-2",
-        "driver",
-        "driver-on-delivery",
-        "complaint-manager",
-      ],
+      type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
     profilePicture: {
       type: String,
       default: null,
-    },
-    employeeCategory: {
-      type: String,
-      enum: ["Driver", "Order Manager", "Packing", "Storage", "Dispatch"],
-      required: [true, "Employee category is required"],
     },
     idCardFront: {
       type: String,
