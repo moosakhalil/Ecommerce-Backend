@@ -10,7 +10,7 @@ const supplierSchema = new Schema(
     },
     email: {
       type: String,
-      required: [true, "Email is required"],
+      required: false,
       trim: true,
       lowercase: true,
       match: [
@@ -95,6 +95,31 @@ const supplierSchema = new Schema(
       type: String,
       default: "",
     },
+    otherDocs: [
+      {
+        type: String,
+      },
+    ],
+    relatedPeople: [
+      {
+        name: {
+          type: String,
+          required: true,
+        },
+        title: {
+          type: String,
+          required: true,
+        },
+        phone: {
+          type: String,
+          required: true,
+        },
+        profilePicture: {
+          type: String,
+          default: "",
+        },
+      },
+    ],
     status: {
       type: String,
       enum: ["blocked", "unblocked"],
@@ -103,11 +128,6 @@ const supplierSchema = new Schema(
     assignedTo: {
       type: String,
       trim: true,
-    },
-    activeInactive: {
-      type: String,
-      enum: ["active", "inactive"],
-      default: "active",
     },
     orders: [
       {

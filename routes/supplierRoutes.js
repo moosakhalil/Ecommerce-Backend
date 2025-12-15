@@ -25,18 +25,18 @@ const storage = multer.diskStorage({
   },
 });
 
-// File filter to only allow image uploads
+// File filter to allow image and PDF uploads
 const fileFilter = (req, file, cb) => {
-  const allowedFileTypes = /jpeg|jpg|png|gif|webp/;
+  const allowedFileTypes = /jpeg|jpg|png|gif|webp|pdf/;
   const extname = allowedFileTypes.test(
     path.extname(file.originalname).toLowerCase()
   );
-  const mimetype = allowedFileTypes.test(file.mimetype);
+  const mimetype = /image\/(jpeg|jpg|png|gif|webp)|application\/pdf/.test(file.mimetype);
 
   if (extname && mimetype) {
     return cb(null, true);
   } else {
-    cb(new Error("Only image files are allowed!"));
+    cb(new Error("Only image and PDF files are allowed!"));
   }
 };
 
@@ -53,6 +53,8 @@ const uploadFields = upload.fields([
   { name: "idCardBack", maxCount: 1 },
   { name: "passportFront", maxCount: 1 },
   { name: "passportBack", maxCount: 1 },
+  { name: "otherDocs", maxCount: 10 },
+  { name: "relatedPeopleImages", maxCount: 20 },
 ]);
 
 // Get all suppliers
@@ -168,6 +170,44 @@ router.post("/", uploadFields, async (req, res) => {
       if (req.files.passportBack) {
         supplierData.passportBack = `/uploads/suppliers/${req.files.passportBack[0].filename}`;
       }
+
+      if (req.files.otherDocs) {
+        supplierData.otherDocs = req.files.otherDocs.map(
+          (file) => `/uploads/suppliers/${file.filename}`
+        );
+      }
+    }
+
+    // Handle related people data and images
+    if (req.body.relatedPeople) {
+      try {
+        // Parse relatedPeople if it's a string, otherwise use as-is
+        const relatedPeople = typeof req.body.relatedPeople === 'string' 
+          ? JSON.parse(req.body.relatedPeople) 
+          : req.body.relatedPeople;
+        
+        // Ensure it's an array
+        if (!Array.isArray(relatedPeople)) {
+          throw new Error("Related people must be an array");
+        }
+        
+        // Map profile pictures to related people if uploaded
+        if (req.files && req.files.relatedPeopleImages) {
+          relatedPeople.forEach((person, index) => {
+            if (req.files.relatedPeopleImages[index]) {
+              person.profilePicture = `/uploads/suppliers/${req.files.relatedPeopleImages[index].filename}`;
+            }
+          });
+        }
+        
+        supplierData.relatedPeople = relatedPeople;
+      } catch (error) {
+        console.error("Error parsing related people:", error);
+        return res.status(400).json({
+          success: false,
+          message: "Invalid related people data format",
+        });
+      }
     }
 
     // Validate document requirements
@@ -233,6 +273,9 @@ router.post("/", uploadFields, async (req, res) => {
 // Update supplier with file uploads
 router.put("/:id", uploadFields, async (req, res) => {
   try {
+    console.log("PUT /api/suppliers/:id - Request body:", req.body);
+    console.log("PUT /api/suppliers/:id - Request files:", req.files ? Object.keys(req.files) : 'none');
+    
     let supplier = await Supplier.findById(req.params.id);
 
     if (!supplier) {
@@ -245,6 +288,15 @@ router.put("/:id", uploadFields, async (req, res) => {
     const supplierData = {
       ...req.body,
     };
+
+    // Parse supplyProducts if it's a JSON string
+    if (supplierData.supplyProducts && typeof supplierData.supplyProducts === 'string') {
+      try {
+        supplierData.supplyProducts = JSON.parse(supplierData.supplyProducts);
+      } catch (e) {
+        console.error('Error parsing supplyProducts:', e);
+      }
+    }
 
     // Add file paths if new files were uploaded
     if (req.files) {
@@ -305,6 +357,80 @@ router.put("/:id", uploadFields, async (req, res) => {
           }
         }
         supplierData.passportBack = `/uploads/suppliers/${req.files.passportBack[0].filename}`;
+      }
+
+      if (req.files.otherDocs) {
+        // Add new other docs to existing ones
+        const newOtherDocs = req.files.otherDocs.map(
+          (file) => `/uploads/suppliers/${file.filename}`
+        );
+        supplierData.otherDocs = [
+          ...(supplier.otherDocs || []),
+          ...newOtherDocs,
+        ];
+      }
+    }
+
+    // Handle related people data and images
+    if (req.body.relatedPeople) {
+      try {
+        // Parse relatedPeople if it's a string, otherwise use as-is
+        const relatedPeople = typeof req.body.relatedPeople === 'string' 
+          ? JSON.parse(req.body.relatedPeople) 
+          : req.body.relatedPeople;
+        
+        // Ensure it's an array
+        if (!Array.isArray(relatedPeople)) {
+          throw new Error("Related people must be an array");
+        }
+        
+        // Map profile pictures to related people if uploaded
+        if (req.files && req.files.relatedPeopleImages) {
+          relatedPeople.forEach((person, index) => {
+            if (req.files.relatedPeopleImages[index]) {
+              person.profilePicture = `/uploads/suppliers/${req.files.relatedPeopleImages[index].filename}`;
+            } else if (person.profilePicture && person.profilePicture.startsWith('/uploads/')) {
+              // Keep existing profile picture path
+              person.profilePicture = person.profilePicture;
+            } else if (person._id) {
+              // Find and keep existing profile picture for this person
+              const existingPerson = supplier.relatedPeople.find(p => p._id && p._id.toString() === person._id);
+              if (existingPerson && existingPerson.profilePicture) {
+                person.profilePicture = existingPerson.profilePicture;
+              } else {
+                person.profilePicture = "";
+              }
+            } else {
+              person.profilePicture = "";
+            }
+          });
+        } else {
+          // No new images uploaded, preserve existing ones
+          relatedPeople.forEach((person) => {
+            if (person.profilePicture && person.profilePicture.startsWith('/uploads/')) {
+              // Already has the correct path
+              person.profilePicture = person.profilePicture;
+            } else if (person._id) {
+              // Find existing person
+              const existingPerson = supplier.relatedPeople.find(p => p._id && p._id.toString() === person._id);
+              if (existingPerson && existingPerson.profilePicture) {
+                person.profilePicture = existingPerson.profilePicture;
+              } else {
+                person.profilePicture = "";
+              }
+            } else {
+              person.profilePicture = "";
+            }
+          });
+        }
+        
+        supplierData.relatedPeople = relatedPeople;
+      } catch (error) {
+        console.error("Error parsing related people:", error);
+        return res.status(400).json({
+          success: false,
+          message: "Invalid related people data format",
+        });
       }
     }
 
@@ -490,49 +616,6 @@ router.patch("/:id/toggle-block", async (req, res) => {
   }
 });
 
-// Toggle supplier active status
-router.patch("/:id/toggle-active", async (req, res) => {
-  try {
-    const supplier = await Supplier.findById(req.params.id);
-
-    if (!supplier) {
-      return res.status(404).json({
-        success: false,
-        message: "Supplier not found",
-      });
-    }
-
-    // Toggle the active status
-    supplier.activeInactive =
-      supplier.activeInactive === "active" ? "inactive" : "active";
-
-    await supplier.save();
-
-    res.status(200).json({
-      success: true,
-      message: `Supplier ${
-        supplier.activeInactive === "active" ? "activated" : "deactivated"
-      } successfully`,
-      data: supplier,
-    });
-  } catch (error) {
-    console.error("Error toggling supplier active status:", error);
-
-    if (error.name === "CastError") {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid supplier ID",
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      message: "Server Error",
-      error: error.message,
-    });
-  }
-});
-
 // Delete specific image from supplier
 router.delete("/:id/image/:fieldName", async (req, res) => {
   try {
@@ -607,6 +690,65 @@ router.delete("/:id/image/:fieldName", async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting supplier image:", error);
+
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid supplier ID",
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server Error",
+      error: error.message,
+    });
+  }
+});
+
+// Delete specific otherDoc from supplier
+router.delete("/:id/otherDoc", async (req, res) => {
+  try {
+    const supplier = await Supplier.findById(req.params.id);
+    const { filePath: docPath } = req.body;
+
+    if (!supplier) {
+      return res.status(404).json({
+        success: false,
+        message: "Supplier not found",
+      });
+    }
+
+    if (!docPath || !supplier.otherDocs || !supplier.otherDocs.includes(docPath)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid document path or document not found",
+      });
+    }
+
+    // Delete file from disk
+    const fullFilePath = path.join(__dirname, "..", docPath);
+    try {
+      if (fs.existsSync(fullFilePath)) {
+        fs.unlinkSync(fullFilePath);
+      }
+    } catch (fileError) {
+      console.error(`Error deleting file ${fullFilePath}:`, fileError);
+      // Continue even if file removal fails
+    }
+
+    // Remove from array
+    supplier.otherDocs = supplier.otherDocs.filter((doc) => doc !== docPath);
+
+    await supplier.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Document deleted successfully",
+      data: supplier,
+    });
+  } catch (error) {
+    console.error("Error deleting supplier document:", error);
 
     if (error.name === "CastError") {
       return res.status(400).json({

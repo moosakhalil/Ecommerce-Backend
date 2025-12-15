@@ -1622,6 +1622,35 @@ router.get("/alerts/low-Stock", async (req, res) => {
   }
 });
 
+// ─── UPDATE PRODUCT SUPPLIER (must come before generic /:id route) ──────
+router.put("/:id/supplier", async (req, res) => {
+  try {
+    const { selectedSupplierId, supplierName, supplierContact, supplierEmail, supplierAddress } = req.body;
+    
+    const updates = {};
+    if (selectedSupplierId !== undefined) updates.selectedSupplierId = selectedSupplierId;
+    if (supplierName !== undefined) updates.supplierName = supplierName;
+    if (supplierContact !== undefined) updates.supplierContact = supplierContact;
+    if (supplierEmail !== undefined) updates.supplierEmail = supplierEmail;
+    if (supplierAddress !== undefined) updates.supplierAddress = supplierAddress;
+
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      updates,
+      { new: true, runValidators: true }
+    );
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.json({ success: true, data: product });
+  } catch (err) {
+    console.error("Error updating product supplier:", err);
+    res.status(500).json({ success: false, message: "Server error", error: err.message });
+  }
+});
+
 // ─── UPDATE Endpoint ─────────────────────────────────────────────────────
 router.put("/:id", uploadFields, async (req, res) => {
   try {
@@ -1714,6 +1743,8 @@ router.put("/:id", uploadFields, async (req, res) => {
       updates.supplierWebsite = b.supplierWebsite;
     if (b.supplierInformation !== undefined)
       updates.supplierInformation = b.supplierInformation;
+    if (b.selectedSupplierId !== undefined)
+      updates.selectedSupplierId = b.selectedSupplierId;
     if (b.visibility !== undefined) updates.visibility = b.visibility;
     if (b.categories !== undefined) updates.categories = b.categories;
     if (b.subCategories !== undefined) updates.subCategories = b.subCategories;
