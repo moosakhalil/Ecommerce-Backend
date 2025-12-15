@@ -239,6 +239,18 @@ const componentCategories = {
         name: "Products",
         path: "/admin/Products",
       },
+      {
+        id: "admin-employee-permission",
+        number: "109.",
+        name: "Employee Permission",
+        path: "/admin/employee-permission",
+      },
+      {
+        id: "admin-employee-roles",
+        number: "110.",
+        name: "Employee Roles",
+        path: "/admin/employee-roles",
+      },
     ],
   },
   referrals: {
@@ -276,9 +288,14 @@ const componentCategories = {
     ],
   },
   settings: {
-    title: "Settings & Support",
+    title: "Settings",
     components: [
       { id: "calendar", number: "", name: "Calendar", path: "/calendar" },
+    ],
+  },
+  support: {
+    title: "Support",
+    components: [
       { id: "support", number: "", name: "Support", path: "/support" },
     ],
   },
