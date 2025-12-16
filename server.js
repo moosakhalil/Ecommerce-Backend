@@ -337,6 +337,14 @@ app.use("/api/vehicle-templates", vehicleTemplateRoutes);
 const calendarRoutes = require("./routes/calendarRoutes");
 app.use("/api/calendar", calendarRoutes);
 
+// Competitor routes
+const competitorRoutes = require("./routes/competitorRoutes");
+app.use("/api/competitors", competitorRoutes);
+
+// Area Management B routes
+const areaManagementRoutes = require("./routes/areaManagementRoutes");
+app.use("/api/area-management", areaManagementRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict

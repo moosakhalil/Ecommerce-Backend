@@ -18,7 +18,27 @@ const calendarDaySchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  holiday: {
+  holidayName1: {
+    type: String,
+    default: ''
+  },
+  specificDay1: {
+    type: String,
+    default: ''
+  },
+  holidayName2: {
+    type: String,
+    default: ''
+  },
+  specificDay2: {
+    type: String,
+    default: ''
+  },
+  holidayName3: {
+    type: String,
+    default: ''
+  },
+  specificDay3: {
     type: String,
     default: ''
   },
