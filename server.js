@@ -345,6 +345,10 @@ app.use("/api/competitors", competitorRoutes);
 const areaManagementRoutes = require("./routes/areaManagementRoutes");
 app.use("/api/area-management", areaManagementRoutes);
 
+// Supplier Order routes (Supply/Stock Arrival)
+const supplierOrderRoutes = require("./routes/supplierOrderRoutes");
+app.use("/api/supplier-orders", supplierOrderRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict

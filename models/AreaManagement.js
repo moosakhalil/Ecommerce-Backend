@@ -60,6 +60,16 @@ const areaSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Regency',
     required: true
+  },
+  scooterPrice: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  truckPrice: {
+    type: Number,
+    default: 0,
+    min: 0
   }
 }, {
   timestamps: true
