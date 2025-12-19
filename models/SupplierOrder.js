@@ -99,6 +99,11 @@ const orderProductSchema = new Schema({
     material: String,
     specifications: String,
   },
+  productItemNumber: {
+    type: Number,
+    required: true,
+    min: 1,
+  },
   orderedQuantity: {
     type: Number,
     required: true,
@@ -296,9 +301,18 @@ supplierOrderSchema.pre("save", async function (next) {
     this.orderNumber = `SO${year}${month}${day}${String(sequence).padStart(4, "0")}`;
   }
 
-  // Calculate totals
+  // Calculate totals and assign product item numbers
   if (this.products && this.products.length > 0) {
     this.productLineCount = this.products.length;
+    
+    // Assign product item numbers if not already set
+    this.products.forEach((product, index) => {
+      if (!product.productItemNumber) {
+        product.productItemNumber = index + 1;
+      }
+    });
+    
+    // Calculate total value
     this.totalValue = this.products.reduce((sum, product) => {
       product.totalPrice = product.price * product.orderedQuantity;
       return sum + product.totalPrice;
