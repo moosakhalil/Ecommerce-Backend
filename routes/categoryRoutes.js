@@ -40,13 +40,19 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// PATCH to update subcategories array (for removals or edits)
+// PATCH to update category name and/or subcategories
 router.patch("/:id", async (req, res) => {
   try {
-    const { subcategories } = req.body;
+    const { name, subcategories } = req.body;
+    const updateData = {};
+    
+    // Only update fields that are provided
+    if (name !== undefined) updateData.name = name;
+    if (subcategories !== undefined) updateData.subcategories = subcategories;
+    
     const updated = await Category.findByIdAndUpdate(
       req.params.id,
-      { subcategories },
+      updateData,
       { new: true }
     );
     return res.json({ success: true, data: updated });

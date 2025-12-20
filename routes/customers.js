@@ -1285,4 +1285,123 @@ router.put("/orders/:orderId/pickup-status", async (req, res) => {
   }
 });
 
+// ─── GET /api/customers/product-sales/:productId ────────
+// Get sales data for a specific product across all customer orders
+router.get("/product-sales/:productId", async (req, res) => {
+  try {
+    const { productId } = req.params;
+
+    console.log("🔍 Fetching sales data for productId:", productId);
+
+    // Aggregate sales data from all customers
+    const pipeline = [
+      {
+        $project: {
+          allOrders: {
+            $concatArrays: [
+              { $ifNull: ["$orderHistory", []] },
+              { $ifNull: ["$shoppingHistory", []] },
+            ],
+          },
+        },
+      },
+      { $unwind: "$allOrders" },
+      { $unwind: "$allOrders.items" },
+      {
+        $match: {
+          "allOrders.items.productId": productId,
+        },
+      },
+      {
+        $project: {
+          orderId: "$allOrders.orderId",
+          orderDate: "$allOrders.orderDate",
+          status: "$allOrders.status",
+          quantity: "$allOrders.items.quantity",
+          price: "$allOrders.items.price",
+          totalPrice: "$allOrders.items.totalPrice",
+          productName: "$allOrders.items.productName",
+          productId: "$allOrders.items.productId",
+          // Extract pricing information
+          normalPrice: "$allOrders.items.price", // The price at which it was sold
+          originalPrice: {
+            $ifNull: ["$allOrders.items.originalPrice", "$allOrders.items.price"],
+          },
+          discountPrice: "$allOrders.items.discountPrice",
+        },
+      },
+      { $sort: { orderDate: -1 } },
+    ];
+
+    const salesData = await Customer.aggregate(pipeline);
+
+    console.log(`✅ Found ${salesData.length} sales records for product ${productId}`);
+
+    // If no data found, let's check if there are any orders at all
+    if (salesData.length === 0) {
+      const totalOrders = await Customer.aggregate([
+        {
+          $project: {
+            orderCount: {
+              $add: [
+                { $size: { $ifNull: ["$orderHistory", []] } },
+                { $size: { $ifNull: ["$shoppingHistory", []] } },
+              ],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$orderCount" },
+          },
+        },
+      ]);
+
+      console.log("📊 Total orders in database:", totalOrders[0]?.total || 0);
+
+      // Sample a few product IDs to help debug
+      const sampleProducts = await Customer.aggregate([
+        {
+          $project: {
+            allOrders: {
+              $concatArrays: [
+                { $ifNull: ["$orderHistory", []] },
+                { $ifNull: ["$shoppingHistory", []] },
+              ],
+            },
+          },
+        },
+        { $unwind: "$allOrders" },
+        { $unwind: "$allOrders.items" },
+        {
+          $group: {
+            _id: "$allOrders.items.productId",
+            count: { $sum: 1 },
+            productName: { $first: "$allOrders.items.productName" },
+          },
+        },
+        { $limit: 10 },
+      ]);
+
+      console.log("📦 Sample product IDs in orders:", sampleProducts);
+    }
+
+    res.json({
+      success: true,
+      data: salesData,
+      total: salesData.length,
+    });
+  } catch (err) {
+    console.error("❌ GET /api/customers/product-sales/:productId error:", err);
+    res.status(500).json({ 
+      success: false, 
+      error: "Server error",
+      message: err.message 
+    });
+  }
+});
+
 module.exports = router;
+
+

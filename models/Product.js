@@ -398,6 +398,13 @@ const productSchema = new Schema(
     // Categorization
     categories: String,
     subCategories: String,
+    
+    // Additional categories for child products
+    additionalCategories: [{
+      category: { type: String, required: true },
+      subcategory: { type: String, required: true }
+    }],
+    
     tags: [String],
 
     // Images

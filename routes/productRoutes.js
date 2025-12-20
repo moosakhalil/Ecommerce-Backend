@@ -77,6 +77,15 @@ router.post("/", async (req, res) => {
         ? JSON.parse(d.tags)
         : d.tags
       : [];
+    
+    // Parse additionalCategories if present
+    console.log("📦 Received additionalCategories:", d.additionalCategories);
+    const additionalCategories = d.additionalCategories
+      ? typeof d.additionalCategories === "string"
+        ? JSON.parse(d.additionalCategories)
+        : d.additionalCategories
+      : [];
+    console.log("✅ Parsed additionalCategories:", additionalCategories);
 
     // 4) Boolean flags
     const onceShare = d.onceShare === "true" || d.onceShare === true;
@@ -140,6 +149,7 @@ router.post("/", async (req, res) => {
 
       categories: d.categories,
       subCategories: d.subCategories,
+      additionalCategories, // Add additional categories for child products
       tags,
       notes: d.notes,
 
@@ -211,7 +221,7 @@ router.get("/", async (req, res) => {
 
     const products = await Product.find(query)
       .select(
-        "productId productName categories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt"
+        "productId productType productName categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt"
       )
       .lean();
 
@@ -812,6 +822,26 @@ router.get("/parents/search", async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Server error", error: err.message });
+  }
+});
+
+// Get product by custom productId (not MongoDB _id)
+router.get("/by-product-id/:productId", async (req, res) => {
+  try {
+    const product = await Product.findOne({ productId: req.params.productId });
+    if (!product) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Product not found" 
+      });
+    }
+    res.json({ success: true, data: product });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: err.message 
+    });
   }
 });
 

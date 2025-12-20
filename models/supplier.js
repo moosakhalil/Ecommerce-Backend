@@ -70,6 +70,11 @@ const supplierSchema = new Schema(
       type: String,
       trim: true,
     },
+    manualAverageDeliveryTime: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     addedOn: {
       type: Date,
       default: Date.now,
