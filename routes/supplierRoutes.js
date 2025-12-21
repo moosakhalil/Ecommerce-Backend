@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const XLSX = require("xlsx");
 const Supplier = require("../models/supplier");
 
 // Set up multer storage for file uploads
@@ -762,6 +763,275 @@ router.delete("/:id/otherDoc", async (req, res) => {
       message: "Server Error",
       error: error.message,
     });
+  }
+});
+
+// ============================================================================
+// EXCEL/CSV BULK UPLOAD ENDPOINT FOR SUPPLIERS
+// ============================================================================
+
+// Configure multer for Excel file uploads
+const excelStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    const uploadDir = path.join(__dirname, "../uploads/excel");
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename(req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `suppliers-${uniqueSuffix}${path.extname(file.originalname)}`);
+  },
+});
+
+const excelUpload = multer({
+  storage: excelStorage,
+  fileFilter(req, file, cb) {
+    const allowedMimes = [
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "text/csv",
+    ];
+    if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.(xlsx|xls|csv)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel and CSV files are allowed!"), false);
+    }
+  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+});
+
+// Upload Excel/CSV and import suppliers
+router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded. Please select an Excel or CSV file.",
+      });
+    }
+
+    console.log("📂 Processing uploaded supplier file:", req.file.originalname);
+
+    // Read the uploaded file
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(sheet);
+
+    console.log(`📊 Found ${data.length} rows in the file`);
+
+    if (data.length === 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: "The file is empty or has no valid data rows.",
+      });
+    }
+
+    // Stats tracking
+    const stats = {
+      total: data.length,
+      created: 0,
+      skipped: 0,
+      errors: [],
+    };
+    const createdSuppliers = [];
+
+    // Helper function to get column value with flexible matching
+    const getColumnValue = (row, ...possibleNames) => {
+      for (const name of possibleNames) {
+        const keys = Object.keys(row);
+        const matchedKey = keys.find(
+          (k) => k.toLowerCase().trim() === name.toLowerCase().trim()
+        );
+        if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== "") {
+          return row[matchedKey];
+        }
+      }
+      return null;
+    };
+
+    // Phone validation regex
+    const phoneRegex = /^\+62[0-9]{9,11}$/;
+
+    // Helper to normalize phone - add +62 if missing
+    const normalizePhone = (phone) => {
+      if (!phone) return null;
+      let normalized = String(phone).trim();
+      // If starts with 62 (without +), add the +
+      if (normalized.match(/^62[0-9]{9,11}$/)) {
+        normalized = '+' + normalized;
+      }
+      // If starts with 0, replace with +62
+      if (normalized.match(/^0[0-9]{9,11}$/)) {
+        normalized = '+62' + normalized.substring(1);
+      }
+      return normalized;
+    };
+
+    // Process each row
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 2; // Excel rows start at 1, header is row 1
+
+      try {
+        // Extract required fields
+        const name = getColumnValue(row, "name", "supplier_name", "supplierName");
+        let phone = getColumnValue(row, "phone", "phone_number", "phoneNumber");
+        const address = getColumnValue(row, "address");
+        const warehouseLocation = getColumnValue(row, "warehouseLocation", "warehouse_location", "warehouse");
+
+        // Normalize phone number (add + prefix if missing)
+        phone = normalizePhone(phone);
+
+        // Validate required fields
+        if (!name) {
+          stats.errors.push({ row: rowNum, field: "name", message: "Supplier name is required" });
+          stats.skipped++;
+          continue;
+        }
+
+        if (!phone) {
+          stats.errors.push({ row: rowNum, field: "phone", message: "Phone number is required" });
+          stats.skipped++;
+          continue;
+        }
+
+        if (!phoneRegex.test(phone)) {
+          stats.errors.push({ row: rowNum, field: "phone", message: `Invalid phone format: ${phone}. Must be +62 followed by 9-11 digits` });
+          stats.skipped++;
+          continue;
+        }
+
+        if (!address) {
+          stats.errors.push({ row: rowNum, field: "address", message: "Address is required" });
+          stats.skipped++;
+          continue;
+        }
+
+        if (!warehouseLocation) {
+          stats.errors.push({ row: rowNum, field: "warehouseLocation", message: "Warehouse location is required" });
+          stats.skipped++;
+          continue;
+        }
+
+        // Check for duplicate supplier by name
+        const existingSupplier = await Supplier.findOne({ name: name });
+        if (existingSupplier) {
+          stats.errors.push({ row: rowNum, field: "name", message: `Duplicate supplier: ${name} already exists` });
+          stats.skipped++;
+          continue;
+        }
+
+        // Extract optional fields
+        const email = getColumnValue(row, "email");
+        let secondPhone = getColumnValue(row, "secondPhone", "second_phone");
+        const nameOrDepartment = getColumnValue(row, "nameOrDepartment", "department");
+        const bankAccount = getColumnValue(row, "bankAccount", "bank_account");
+        const bankName = getColumnValue(row, "bankName", "bank_name");
+        let emergencyContact = getColumnValue(row, "emergencyContact", "emergency_contact");
+        const manualAverageDeliveryTime = getColumnValue(row, "manualAverageDeliveryTime", "delivery_time", "averageDeliveryTime");
+        const status = getColumnValue(row, "status") || "unblocked";
+        const assignedTo = getColumnValue(row, "assignedTo", "assigned_to");
+
+        // Normalize phone numbers (add + prefix if missing)
+        secondPhone = normalizePhone(secondPhone);
+        emergencyContact = normalizePhone(emergencyContact);
+
+        // Validate secondPhone if provided
+        if (secondPhone && !phoneRegex.test(secondPhone)) {
+          stats.errors.push({ row: rowNum, field: "secondPhone", message: `Invalid second phone format: ${secondPhone}` });
+          stats.skipped++;
+          continue;
+        }
+
+        // Create supplier - Note: ID card/passport requirement is skipped for bulk import
+        // These documents need to be added manually later
+        const supplier = new Supplier({
+          name,
+          email,
+          phone,
+          secondPhone,
+          nameOrDepartment,
+          address,
+          warehouseLocation,
+          bankAccount,
+          bankName,
+          emergencyContact,
+          manualAverageDeliveryTime,
+          status: status === "blocked" ? "blocked" : "unblocked",
+          assignedTo,
+          // Set placeholder for ID card - MUST be updated manually later
+          idCardFront: "pending",
+          idCardBack: "pending",
+        });
+
+        await supplier.save();
+        stats.created++;
+        createdSuppliers.push({
+          id: supplier._id,
+          name: supplier.name,
+          phone: supplier.phone,
+        });
+
+      } catch (err) {
+        console.error(`Error processing row ${rowNum}:`, err.message);
+        stats.errors.push({ row: rowNum, field: "general", message: err.message });
+        stats.skipped++;
+      }
+    }
+
+    // Clean up uploaded file
+    try {
+      fs.unlinkSync(req.file.path);
+    } catch (e) {
+      console.warn("Could not delete temp file:", e.message);
+    }
+
+    console.log(`✅ Supplier Excel upload complete: ${stats.created} created, ${stats.skipped} skipped`);
+
+    res.json({
+      success: true,
+      message: `Successfully imported ${stats.created} suppliers`,
+      summary: stats,
+      createdSuppliers: createdSuppliers.slice(0, 50),
+      note: "Imported suppliers have placeholder ID cards. Please update their documents manually.",
+    });
+
+  } catch (err) {
+    console.error("❌ Error processing supplier Excel upload:", err);
+
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Error processing Excel file: " + err.message,
+    });
+  }
+});
+
+// Download supplier template
+router.get("/download-template", (req, res) => {
+  const templatePath = path.join(__dirname, "../../frontend/public/templates/supplierExcelTemplate.csv");
+  
+  if (fs.existsSync(templatePath)) {
+    res.download(templatePath, "supplierExcelTemplate.csv");
+  } else {
+    // Generate a basic template if file doesn't exist
+    const headers = [
+      "name", "email", "phone", "secondPhone", "nameOrDepartment", "address",
+      "warehouseLocation", "bankAccount", "bankName", "emergencyContact",
+      "manualAverageDeliveryTime", "status", "assignedTo"
+    ];
+    const csvContent = headers.join(",") + "\nPT Example Supplier,supplier@example.com,+6281234567890,+6281234567891,Sales,Jl. Example No. 1,Gudang Example,1234567890,Bank Example,+6281234567892,2-3 hari,unblocked,Admin";
+    
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=supplierExcelTemplate.csv");
+    res.send(csvContent);
   }
 });
 

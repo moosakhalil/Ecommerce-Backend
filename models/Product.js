@@ -271,6 +271,10 @@ const productSchema = new Schema(
     lastOrderDate: Date,
 
     // Supplier info
+    selectedSupplierId: {
+      type: Schema.Types.ObjectId,
+      ref: "Supplier",
+    },
     alternateSupplier: String,
     supplierName: String,
     supplierContact: String,

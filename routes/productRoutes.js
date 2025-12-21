@@ -1,11 +1,43 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const Product = require("../models/Product");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const XLSX = require("xlsx");
 
 const Supplier = require("../models/supplier");
+
+// ─── Excel Upload Multer Configuration ───────────────────────────────────
+const excelStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    const uploadDir = path.join(__dirname, "../uploads/excel");
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename(req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, `products-${uniqueSuffix}${path.extname(file.originalname)}`);
+  },
+});
+
+const excelUpload = multer({
+  storage: excelStorage,
+  fileFilter(req, file, cb) {
+    const allowedMimes = [
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "text/csv",
+    ];
+    if (allowedMimes.includes(file.mimetype) || file.originalname.match(/\.(xlsx|xls|csv)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only Excel and CSV files are allowed!"), false);
+    }
+  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+});
 
 // ─── 1) Helper to parse numbers safely ───────────────────────────────────
 function parseOptionalNumber(val) {
@@ -221,7 +253,7 @@ router.get("/", async (req, res) => {
 
     const products = await Product.find(query)
       .select(
-        "productId productType productName categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt"
+        "productId productType productName categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt selectedSupplierId supplierName supplierContact supplierEmail supplierAddress"
       )
       .lean();
 
@@ -631,6 +663,298 @@ router.get("/test-discounts", (req, res) => {
       "DELETE /api/products/:id/discount",
     ],
   });
+});
+
+// ============================================================================
+// EXCEL/CSV BULK UPLOAD ENDPOINT
+// ============================================================================
+
+// ─── Upload Excel/CSV and import products ─────────────────────────────────
+router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded. Please select an Excel or CSV file.",
+      });
+    }
+
+    console.log("📂 Processing uploaded file:", req.file.originalname);
+
+    // Read the uploaded file
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(sheet);
+
+    console.log(`📊 Found ${data.length} rows in the file`);
+
+    if (data.length === 0) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: "The file is empty or has no valid data rows.",
+      });
+    }
+
+    // Stats tracking
+    const stats = {
+      total: data.length,
+      created: 0,
+      skipped: 0,
+      errors: [],
+    };
+    const createdProducts = [];
+
+    // Helper function to get column value with flexible matching
+    const getColumnValue = (row, ...possibleNames) => {
+      for (const name of possibleNames) {
+        const keys = Object.keys(row);
+        const matchedKey = keys.find(
+          (k) => k.toLowerCase().trim() === name.toLowerCase().trim()
+        );
+        if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== "") {
+          return row[matchedKey];
+        }
+      }
+      return null;
+    };
+
+    // Helper to parse boolean
+    const parseBoolean = (val) => {
+      if (val === undefined || val === null || val === "") return false;
+      if (typeof val === "boolean") return val;
+      const str = String(val).toLowerCase().trim();
+      return str === "true" || str === "yes" || str === "1";
+    };
+
+    // Process each row
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 2; // Excel rows start at 1, header is row 1
+
+      try {
+        // Extract required fields
+        const productType = getColumnValue(row, "productType", "product_type", "type") || "Normal";
+        const productName = getColumnValue(row, "productName", "product_name", "name", "varianceName");
+        const description = getColumnValue(row, "description", "desc");
+        const globalTradeItemNumber = getColumnValue(row, "globalTradeItemNumber", "gtin", "upc", "ean", "barcode");
+        const categories = getColumnValue(row, "categories", "category");
+        const NormalPrice = parseOptionalNumber(getColumnValue(row, "NormalPrice", "normal_price", "price"));
+        const Stock = parseOptionalNumber(getColumnValue(row, "Stock", "stock", "quantity", "initial_stock"));
+
+        // Validate required fields
+        if (!productName) {
+          stats.errors.push({ row: rowNum, field: "productName", message: "Product name is required" });
+          stats.skipped++;
+          continue;
+        }
+
+        if (!productType || !["Parent", "Child", "Normal"].includes(productType)) {
+          stats.errors.push({ row: rowNum, field: "productType", message: `Invalid product type: ${productType}. Must be Parent, Child, or Normal` });
+          stats.skipped++;
+          continue;
+        }
+
+        // Check for duplicate GTIN
+        if (globalTradeItemNumber) {
+          const existingProduct = await Product.findOne({ globalTradeItemNumber });
+          if (existingProduct) {
+            stats.errors.push({ row: rowNum, field: "globalTradeItemNumber", message: `Duplicate GTIN: ${globalTradeItemNumber} already exists` });
+            stats.skipped++;
+            continue;
+          }
+        }
+
+        // Extract optional fields
+        const subtitle = getColumnValue(row, "subtitle");
+        const brand = getColumnValue(row, "brand");
+        const notes = getColumnValue(row, "notes");
+        const parentProduct = getColumnValue(row, "parentProduct", "parent_product");
+        const varianceName = getColumnValue(row, "varianceName", "variance_name");
+        const subtitleDescription = getColumnValue(row, "subtitleDescription");
+        const k3lNumber = getColumnValue(row, "k3lNumber", "k3l");
+        const sniNumber = getColumnValue(row, "sniNumber", "sni");
+        const subCategories = getColumnValue(row, "subCategories", "sub_categories", "subcategory");
+        const visibility = getColumnValue(row, "visibility") || "Public";
+        const packageSize = getColumnValue(row, "packageSize", "package_size") || "Large";
+        const tagsStr = getColumnValue(row, "tags");
+        const tags = tagsStr ? String(tagsStr).split(",").map(t => t.trim()) : [];
+
+        // Specifications
+        const height = parseOptionalNumber(getColumnValue(row, "height"));
+        const length = parseOptionalNumber(getColumnValue(row, "length"));
+        const width = parseOptionalNumber(getColumnValue(row, "width"));
+        const depth = parseOptionalNumber(getColumnValue(row, "depth"));
+        const weight = parseOptionalNumber(getColumnValue(row, "weight"));
+        const colours = getColumnValue(row, "colours", "colors", "color");
+
+        const specifications = [];
+        if (height || length || width || depth || weight || colours) {
+          specifications.push({ height, length, width, depth, weight, colours });
+        }
+
+        // Inventory fields
+        const minimumOrder = parseOptionalNumber(getColumnValue(row, "minimumOrder", "minimum_order")) || 1;
+        const highestValue = getColumnValue(row, "highestValue");
+        const normalShelvesCount = parseOptionalNumber(getColumnValue(row, "normalShelvesCount"));
+        const highShelvesCount = parseOptionalNumber(getColumnValue(row, "highShelvesCount"));
+        const lostStock = parseOptionalNumber(getColumnValue(row, "lostStock")) || 0;
+
+        // Reorder settings
+        const useAmountStockmintoReorder = parseBoolean(getColumnValue(row, "useAmountStockmintoReorder"));
+        const useSafetyDays = parseBoolean(getColumnValue(row, "useSafetyDays"));
+        const noReorder = parseBoolean(getColumnValue(row, "noReorder"));
+        const AmountStockmintoReorder = parseOptionalNumber(getColumnValue(row, "AmountStockmintoReorder"));
+        const safetyDaysStock = parseOptionalNumber(getColumnValue(row, "safetyDaysStock"));
+
+        // Delivery & Supplier
+        const deliveryDays = parseOptionalNumber(getColumnValue(row, "deliveryDays"));
+        const deliveryTime = getColumnValue(row, "deliveryTime");
+        const reOrderSetting = getColumnValue(row, "reOrderSetting");
+        const inventoryInDays = getColumnValue(row, "inventoryInDays");
+        const deliveryPeriod = getColumnValue(row, "deliveryPeriod");
+        const orderTimeBackupInventory = getColumnValue(row, "orderTimeBackupInventory");
+        const alternateSupplier = getColumnValue(row, "alternateSupplier");
+        const supplierName = getColumnValue(row, "supplierName", "supplier_name");
+        const supplierContact = getColumnValue(row, "supplierContact");
+        const supplierAddress = getColumnValue(row, "supplierAddress");
+        const supplierEmail = getColumnValue(row, "supplierEmail");
+        const supplierWebsite = getColumnValue(row, "supplierWebsite");
+        const supplierInformation = getColumnValue(row, "supplierInformation");
+
+        // Pricing
+        const anyDiscount = parseOptionalNumber(getColumnValue(row, "anyDiscount"));
+
+        // Vehicle fields
+        const suggestedVehicleType = getColumnValue(row, "suggestedVehicleType");
+        const vehicleTypeOverride = getColumnValue(row, "vehicleTypeOverride");
+        const finalVehicleType = getColumnValue(row, "finalVehicleType");
+
+        // Visibility flags
+        const onceShare = parseBoolean(getColumnValue(row, "onceShare"));
+        const noChildHideParent = parseBoolean(getColumnValue(row, "noChildHideParent"));
+
+        // Create the product
+        const product = new Product({
+          productType,
+          productName,
+          subtitle,
+          brand,
+          description,
+          notes,
+          parentProduct,
+          varianceName,
+          subtitleDescription,
+          globalTradeItemNumber,
+          k3lNumber,
+          sniNumber,
+          specifications,
+          minimumOrder,
+          highestValue,
+          normalShelvesCount,
+          highShelvesCount,
+          useAmountStockmintoReorder,
+          useSafetyDays,
+          noReorder,
+          AmountStockmintoReorder,
+          safetyDaysStock,
+          deliveryDays,
+          deliveryTime,
+          reOrderSetting,
+          inventoryInDays,
+          deliveryPeriod,
+          orderTimeBackupInventory,
+          alternateSupplier,
+          supplierName,
+          supplierContact,
+          supplierAddress,
+          supplierEmail,
+          supplierWebsite,
+          supplierInformation,
+          anyDiscount,
+          NormalPrice,
+          Stock,
+          lostStock,
+          packageSize,
+          suggestedVehicleType,
+          vehicleTypeOverride,
+          finalVehicleType,
+          visibility,
+          onceShare,
+          noChildHideParent,
+          categories,
+          subCategories,
+          tags,
+        });
+
+        await product.save();
+        stats.created++;
+        createdProducts.push({
+          productId: product.productId,
+          productName: product.productName,
+          categories: product.categories,
+        });
+
+      } catch (err) {
+        console.error(`Error processing row ${rowNum}:`, err.message);
+        stats.errors.push({ row: rowNum, field: "general", message: err.message });
+        stats.skipped++;
+      }
+    }
+
+    // Clean up uploaded file
+    try {
+      fs.unlinkSync(req.file.path);
+    } catch (e) {
+      console.warn("Could not delete temp file:", e.message);
+    }
+
+    console.log(`✅ Excel upload complete: ${stats.created} created, ${stats.skipped} skipped`);
+
+    res.json({
+      success: true,
+      message: `Successfully imported ${stats.created} products`,
+      summary: stats,
+      createdProducts: createdProducts.slice(0, 50), // Limit to first 50 for response
+    });
+
+  } catch (err) {
+    console.error("❌ Error processing Excel upload:", err);
+
+    // Clean up uploaded file on error
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Error processing Excel file: " + err.message,
+    });
+  }
+});
+
+// ─── Download Excel Template ─────────────────────────────────────────────
+router.get("/download-template", (req, res) => {
+  const templatePath = path.join(__dirname, "../../frontend/public/templates/productExcelTemplate.csv");
+  
+  if (fs.existsSync(templatePath)) {
+    res.download(templatePath, "productExcelTemplate.csv");
+  } else {
+    // Generate a basic template if file doesn't exist
+    const headers = [
+      "productType", "productName", "brand", "description", "categories", "subCategories",
+      "NormalPrice", "Stock", "globalTradeItemNumber", "packageSize", "visibility", "tags", "notes"
+    ];
+    const csvContent = headers.join(",") + "\nNormal,Sample Product,Brand Name,Product description,Category,Subcategory,10000,100,1234567890123,Large,Public,\"tag1,tag2\",Notes here";
+    
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=productExcelTemplate.csv");
+    res.send(csvContent);
+  }
 });
 
 // ============================================================================
@@ -1655,14 +1979,34 @@ router.get("/alerts/low-Stock", async (req, res) => {
 // ─── UPDATE PRODUCT SUPPLIER (must come before generic /:id route) ──────
 router.put("/:id/supplier", async (req, res) => {
   try {
+    console.log("PUT /:id/supplier - Updating product supplier:", req.params.id, req.body);
+    
     const { selectedSupplierId, supplierName, supplierContact, supplierEmail, supplierAddress } = req.body;
     
+    // Validate product ID is a valid ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid product ID format" });
+    }
+    
     const updates = {};
-    if (selectedSupplierId !== undefined) updates.selectedSupplierId = selectedSupplierId;
+    
+    // Only set selectedSupplierId if it's a valid ObjectId or null/empty
+    if (selectedSupplierId) {
+      if (mongoose.Types.ObjectId.isValid(selectedSupplierId)) {
+        updates.selectedSupplierId = selectedSupplierId;
+      } else {
+        return res.status(400).json({ success: false, message: "Invalid supplier ID format" });
+      }
+    } else if (selectedSupplierId === null || selectedSupplierId === "") {
+      updates.selectedSupplierId = null;
+    }
+    
     if (supplierName !== undefined) updates.supplierName = supplierName;
     if (supplierContact !== undefined) updates.supplierContact = supplierContact;
     if (supplierEmail !== undefined) updates.supplierEmail = supplierEmail;
     if (supplierAddress !== undefined) updates.supplierAddress = supplierAddress;
+
+    console.log("Applying updates:", updates);
 
     const product = await Product.findByIdAndUpdate(
       req.params.id,
@@ -1674,6 +2018,7 @@ router.put("/:id/supplier", async (req, res) => {
       return res.status(404).json({ success: false, message: "Product not found" });
     }
 
+    console.log("Product updated successfully, selectedSupplierId:", product.selectedSupplierId);
     res.json({ success: true, data: product });
   } catch (err) {
     console.error("Error updating product supplier:", err);

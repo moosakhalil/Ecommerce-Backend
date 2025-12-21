@@ -96,6 +96,7 @@ const employeeRoleRoutes = require("./routes/employeeRoleRoutes");
 const supplierRoutes = require("./routes/supplierRoutes");
 const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
+const salesDataRoutes = require("./routes/salesDataRoutes");
 const customersRouter = require("./routes/customers");
 const referralVideosRoutes = require("./routes/referralVideos");
 const chatbotRouter = require("./routes/chatbot-router");
@@ -138,6 +139,8 @@ const {
 const { adminRouter } = require("./routes/admin");
 
 // Make JWT secrets and middleware available globally
+app.use("/api/sales-data", salesDataRoutes);
+
 global.JWT_SECRET = JWT_SECRET;
 global.JWT_REFRESH_SECRET = JWT_REFRESH_SECRET;
 global.EMAIL_CONFIG = EMAIL_CONFIG;
