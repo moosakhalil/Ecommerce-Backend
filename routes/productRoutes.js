@@ -8,6 +8,7 @@ const fs = require("fs");
 const XLSX = require("xlsx");
 
 const Supplier = require("../models/supplier");
+const Category = require("../models/Category");
 
 // ─── Excel Upload Multer Configuration ───────────────────────────────────
 const excelStorage = multer.diskStorage({
@@ -897,6 +898,34 @@ router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
           categories: product.categories,
         });
 
+        // ✅ Sync categories to Category collection for chatbot display
+        if (categories) {
+          try {
+            const categoryName = categories.trim();
+            let categoryDoc = await Category.findOne({ name: categoryName });
+            
+            if (!categoryDoc) {
+              // Create new category
+              categoryDoc = new Category({
+                name: categoryName,
+                subcategories: subCategories ? [subCategories.trim()] : [],
+              });
+              await categoryDoc.save();
+              console.log(`📁 Created new category: ${categoryName}`);
+            } else if (subCategories) {
+              // Add subcategory if it doesn't exist
+              const subCatName = subCategories.trim();
+              if (!categoryDoc.subcategories.includes(subCatName)) {
+                categoryDoc.subcategories.push(subCatName);
+                await categoryDoc.save();
+                console.log(`📁 Added subcategory "${subCatName}" to category "${categoryName}"`);
+              }
+            }
+          } catch (catErr) {
+            console.warn(`⚠️ Could not sync category "${categories}":`, catErr.message);
+          }
+        }
+
       } catch (err) {
         console.error(`Error processing row ${rowNum}:`, err.message);
         stats.errors.push({ row: rowNum, field: "general", message: err.message });
@@ -954,6 +983,89 @@ router.get("/download-template", (req, res) => {
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", "attachment; filename=productExcelTemplate.csv");
     res.send(csvContent);
+  }
+});
+
+// ============================================================================
+// SYNC EXISTING PRODUCTS' CATEGORIES TO CATEGORY COLLECTION
+// ============================================================================
+
+// ─── Sync all products' categories to Category collection ─────────────────────
+router.post("/sync-categories", async (req, res) => {
+  try {
+    console.log("🔄 Syncing all products' categories to Category collection...");
+
+    // Get all unique categories and subcategories from products
+    const products = await Product.find({
+      categories: { $exists: true, $ne: null, $ne: "" },
+    }).select("categories subCategories").lean();
+
+    const categoryMap = new Map(); // Map<categoryName, Set<subcategoryName>>
+
+    for (const product of products) {
+      if (product.categories) {
+        const categoryName = product.categories.trim();
+        
+        if (!categoryMap.has(categoryName)) {
+          categoryMap.set(categoryName, new Set());
+        }
+        
+        if (product.subCategories) {
+          categoryMap.get(categoryName).add(product.subCategories.trim());
+        }
+      }
+    }
+
+    let created = 0;
+    let updated = 0;
+
+    for (const [categoryName, subcategories] of categoryMap) {
+      let categoryDoc = await Category.findOne({ name: categoryName });
+      
+      if (!categoryDoc) {
+        // Create new category
+        categoryDoc = new Category({
+          name: categoryName,
+          subcategories: Array.from(subcategories),
+        });
+        await categoryDoc.save();
+        created++;
+        console.log(`📁 Created category: ${categoryName} with ${subcategories.size} subcategories`);
+      } else {
+        // Update existing category with new subcategories
+        let isUpdated = false;
+        for (const subCat of subcategories) {
+          if (!categoryDoc.subcategories.includes(subCat)) {
+            categoryDoc.subcategories.push(subCat);
+            isUpdated = true;
+          }
+        }
+        if (isUpdated) {
+          await categoryDoc.save();
+          updated++;
+          console.log(`📁 Updated category: ${categoryName}`);
+        }
+      }
+    }
+
+    console.log(`✅ Sync complete: ${created} created, ${updated} updated`);
+
+    res.json({
+      success: true,
+      message: `Category sync complete`,
+      summary: {
+        productsProcessed: products.length,
+        categoriesCreated: created,
+        categoriesUpdated: updated,
+        totalCategories: categoryMap.size,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Error syncing categories:", err);
+    res.status(500).json({
+      success: false,
+      message: "Error syncing categories: " + err.message,
+    });
   }
 });
 
