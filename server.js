@@ -98,11 +98,14 @@ const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
 const salesDataRoutes = require("./routes/salesDataRoutes");
 const billRoutes = require("./routes/billRoutes");
+const taxBracketRoutes = require("./routes/taxBracketRoutes");
+const walletRoutes = require("./routes/walletRoutes");
 const customersRouter = require("./routes/customers");
 const referralVideosRoutes = require("./routes/referralVideos");
 const chatbotRouter = require("./routes/chatbot-router");
 const referralDataRoutes = require("./routes/referralData");
 const foremanCustomersRoutes = require("./routes/foremanCustomers");
+const feeControlRoutes = require("./routes/feeControlRoutes");
 const referralDemoRoutes = require("./routes/customerVideosRoutes");
 const supportRoutes = require("./routes/support");
 const deliveryRoutes = require("./routes/deliveryRoutes");
@@ -142,6 +145,9 @@ const { adminRouter } = require("./routes/admin");
 // Make JWT secrets and middleware available globally
 app.use("/api/sales-data", salesDataRoutes);
 app.use("/api/bills", billRoutes);
+app.use("/api/tax-brackets", taxBracketRoutes);
+app.use("/api/wallets", walletRoutes);
+app.use("/api/fee-control", feeControlRoutes);
 
 global.JWT_SECRET = JWT_SECRET;
 global.JWT_REFRESH_SECRET = JWT_REFRESH_SECRET;
@@ -293,6 +299,10 @@ mongoose
 
     // ✅ FIXED: Seed only permissions (removed role seeding)
     await seedDatabase();
+
+    // ✅ NEW: Seed default tax bracket
+    const TaxBracket = require("./models/TaxBracket");
+    await TaxBracket.seedDefaultBracket();
   })
   .catch((err) => {
     console.error("❌ MongoDB connection error:", err);

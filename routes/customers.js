@@ -1253,12 +1253,14 @@ router.put("/orders/:orderId/pickup-status", async (req, res) => {
 
     // Find and update order
     let updated = false;
+    let updatedOrder = null;
     if (customer.orderHistory) {
       const orderIndex = customer.orderHistory.findIndex(
         (o) => o.orderId === orderId
       );
       if (orderIndex !== -1) {
         customer.orderHistory[orderIndex].status = pickupStatus;
+        updatedOrder = customer.orderHistory[orderIndex];
         updated = true;
       }
     }
@@ -1269,6 +1271,7 @@ router.put("/orders/:orderId/pickup-status", async (req, res) => {
       );
       if (orderIndex !== -1) {
         customer.shoppingHistory[orderIndex].status = pickupStatus;
+        updatedOrder = customer.shoppingHistory[orderIndex];
         updated = true;
       }
     }
@@ -1278,6 +1281,20 @@ router.put("/orders/:orderId/pickup-status", async (req, res) => {
     }
 
     await customer.save();
+
+    // Send pickup confirmation message via WhatsApp when order is picked up
+    if (pickupStatus === "order-pickuped-up" && customer.phoneNumber) {
+      try {
+        const { sendPickupConfirmationToCustomer } = require("./chatbot-router");
+        if (sendPickupConfirmationToCustomer) {
+          await sendPickupConfirmationToCustomer(customer, updatedOrder);
+        }
+      } catch (msgError) {
+        console.error("Error sending pickup confirmation message:", msgError);
+        // Don't fail the request if message fails
+      }
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error("PUT /orders/:orderId/pickup-status error:", err);

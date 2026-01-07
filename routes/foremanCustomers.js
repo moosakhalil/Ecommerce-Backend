@@ -762,4 +762,265 @@ router.get("/stats/overview", async (req, res) => {
   }
 });
 
+// ============= FOREMAN REFERRAL SYSTEM - NEW CUSTOMERS ONLY =============
+
+// POST /api/foreman-customers/validate-referral
+// Check if a phone number can be referred (new customers only)
+router.post("/validate-referral", async (req, res) => {
+  try {
+    const { customerPhone, referrerPhone } = req.body;
+    
+    if (!customerPhone || !referrerPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Both customerPhone and referrerPhone are required"
+      });
+    }
+    
+    // Check if referrer exists
+    const referrer = await Customer.findOne({ 
+      phoneNumber: { $in: [referrerPhone] } 
+    });
+    
+    if (!referrer) {
+      return res.json({
+        success: false,
+        canRefer: false,
+        reason: "Referrer phone number not found in system"
+      });
+    }
+    
+    // Check 5-day rule for customer
+    const validation = await Customer.canBeReferred(customerPhone);
+    
+    res.json({
+      success: true,
+      ...validation,
+      referrerId: validation.canRefer ? referrer._id : null,
+      referrerName: validation.canRefer ? referrer.name : null,
+      referrerPhone: referrerPhone
+    });
+    
+  } catch (error) {
+    console.error("Error validating referral:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error validating referral",
+      error: error.message
+    });
+  }
+});
+
+// POST /api/foreman-customers/create-referral
+// Link a new customer to a referrer (new customers only)
+router.post("/create-referral", async (req, res) => {
+  try {
+    const { customerPhone, customerName, referrerPhone } = req.body;
+    
+    // Validate - only new customers can be referred
+    const validation = await Customer.canBeReferred(customerPhone);
+    
+    if (!validation.canRefer) {
+      return res.status(400).json({
+        success: false,
+        message: validation.reason
+      });
+    }
+    
+    // Get referrer
+    const referrer = await Customer.findOne({ 
+      phoneNumber: { $in: [referrerPhone] } 
+    });
+    
+    if (!referrer) {
+      return res.status(404).json({
+        success: false,
+        message: "Referrer not found"
+      });
+    }
+    
+    // For new customers, return ready status (customer will be created on first order)
+    res.json({
+      success: true,
+      message: "Ready to refer - customer will be linked on first contact",
+      isNewCustomer: true,
+      referrerId: referrer._id,
+      referrerName: referrer.name
+    });
+    
+  } catch (error) {
+    console.error("Error creating referral:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error creating referral",
+      error: error.message
+    });
+  }
+});
+// GET /api/foreman-customers/:customerId/commission-ledger
+// Get full commission wallet ledger (banking style)
+router.get("/:customerId/commission-ledger", async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+    
+    const wallet = customer.commissionWallet || {
+      currentBalance: 0,
+      totalCredits: 0,
+      totalDebits: 0,
+      ledger: []
+    };
+    
+    // Sort ledger by date (newest first)
+    const sortedLedger = [...(wallet.ledger || [])].sort(
+      (a, b) => new Date(b.date) - new Date(a.date)
+    );
+    
+    // Get latest 5 for header
+    const latest5 = sortedLedger.slice(0, 5);
+    
+    // Paginate full list
+    const startIndex = (page - 1) * limit;
+    const paginatedList = sortedLedger.slice(startIndex, startIndex + parseInt(limit));
+    
+    res.json({
+      success: true,
+      latest5: latest5,
+      fullList: paginatedList,
+      allEntries: sortedLedger,
+      total: sortedLedger.length,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(sortedLedger.length / limit),
+      currentBalance: wallet.currentBalance,
+      totalCredits: wallet.totalCredits,
+      totalDebits: wallet.totalDebits
+    });
+    
+  } catch (error) {
+    console.error("Error fetching commission ledger:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching commission ledger",
+      error: error.message
+    });
+  }
+});
+
+// POST /api/foreman-customers/:customerId/debit-wallet
+// Debit from commission wallet (shop use or withdrawal)
+router.post("/:customerId/debit-wallet", async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { amount, type, billNumber, staffId, staffName, note } = req.body;
+    
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than 0"
+      });
+    }
+    
+    if (!type || !["shop_use", "withdrawal"].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: "Type must be 'shop_use' or 'withdrawal'"
+      });
+    }
+    
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+    
+    const staffInfo = { staffId: staffId || "ADMIN", staffName: staffName || "Admin" };
+    
+    await customer.debitCommissionWallet(amount, type, billNumber, staffInfo, note);
+    
+    res.json({
+      success: true,
+      message: `Rs. ${amount} debited successfully`,
+      newBalance: customer.commissionWallet.currentBalance
+    });
+    
+  } catch (error) {
+    console.error("Error debiting wallet:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Error debiting wallet"
+    });
+  }
+});
+
+// GET /api/foreman-customers/referrals/all
+// Get all referrals with commission data for admin dashboard
+router.get("/referrals/all", async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    
+    // Get all customers who have made referrals
+    const referrers = await Customer.find({
+      "customersReferred.0": { $exists: true }
+    }).select("name phoneNumber customersReferred foremanStatus commissionWallet commissionTracking");
+    
+    // Flatten all referrals with referrer info
+    const allReferrals = [];
+    
+    for (const referrer of referrers) {
+      for (const referred of referrer.customersReferred || []) {
+        allReferrals.push({
+          referrerId: referrer._id,
+          referrerName: referrer.name,
+          referrerPhone: referrer.phoneNumber[0],
+          isForemanApproved: referrer.foremanStatus?.isForemanApproved || false,
+          isCommissionEligible: referrer.foremanStatus?.isCommissionEligible || false,
+          referredCustomerId: referred.customerId,
+          referredCustomerName: referred.customerName,
+          referredCustomerPhone: referred.phoneNumber,
+          referralDate: referred.referralDate,
+          hasPlacedOrder: referred.hasPlacedOrder,
+          totalOrdersCount: referred.totalOrdersCount || 0,
+          totalSpentAmount: referred.totalSpentAmount || 0,
+          commissionGenerated: referred.commissionGenerated || 0
+        });
+      }
+    }
+    
+    // Sort by referral date (newest first)
+    allReferrals.sort((a, b) => new Date(b.referralDate) - new Date(a.referralDate));
+    
+    // Paginate
+    const startIndex = (page - 1) * limit;
+    const paginatedReferrals = allReferrals.slice(startIndex, startIndex + parseInt(limit));
+    
+    res.json({
+      success: true,
+      referrals: paginatedReferrals,
+      total: allReferrals.length,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(allReferrals.length / limit)
+    });
+    
+  } catch (error) {
+    console.error("Error fetching all referrals:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching referrals",
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

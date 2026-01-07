@@ -704,6 +704,34 @@ const getActivAreasForChatbot = async () => {
   }
 };
 
+// Helper function to send pickup confirmation message
+async function sendPickupConfirmationMessage(customer, order) {
+  try {
+    const phoneNumber = customer.phoneNumber;
+    const pickupDate = order.pickupPlan?.date || customer.pickupPlan?.date || new Date().toLocaleDateString();
+    const pickupTime = order.pickupPlan?.timeSlot || customer.pickupPlan?.timeSlot || "Not specified";
+    const currentDateTime = new Date().toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    const confirmationMessage = 
+      `✅ *Order Pickup Confirmed!*\n\n` +
+      `Thank you for picking up your order.\n\n` +
+      `📦 *Order ID:* #${order.orderId}\n` +
+      `📅 *Pickup Date & Time:* ${currentDateTime}\n\n` +
+      `We hope everything is perfect! If you have any questions, feel free to contact support.\n\n` +
+      `Thank you for choosing us! 😊`;
+
+    await sendWhatsAppMessage(phoneNumber, confirmationMessage);
+    console.log(`✅ Pickup confirmation sent for order ${order.orderId} to ${customer.phoneNumber}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Error sending pickup confirmation:`, error);
+    return false;
+  }
+}
+
 async function checkAndSendConfirmations() {
   try {
     console.log("🔍 Checking for orders needing confirmation...");
@@ -3209,7 +3237,7 @@ async function processChatMessage(phoneNumber, text, message) {
         const idx3 = customer.orderHistory.findIndex(
           (o) => o.orderId === customer.latestOrderId
         );
-        if (idx >= 0) {
+        if (idx3 >= 0) {
           customer.orderHistory[idx3].deliveryLocation =
             selectedAddress.area || "Not specified";
           customer.orderHistory[idx3].deliveryCharge =
@@ -5301,7 +5329,7 @@ Don't be scared call us and we will help you xxx-xxx`
             "Address not specified";
 
           await customer.updateSupportFlow({
-            currentStep: "new_address_input",
+            currentStep: "address_change_confirm",
             tempData: {
               ...customer.currentSupportFlow.tempData,
               orderId: addressOrder.orderId,
@@ -5310,22 +5338,17 @@ Don't be scared call us and we will help you xxx-xxx`
             },
           });
 
-          await customer.updateConversationState("new_address_input");
+          await customer.updateConversationState("address_change_confirm");
           await sendWhatsAppMessage(
             phoneNumber,
-            `📍 *Change Address for Order #${addressOrder.orderId}*\n\n` +
+            `⚠️ *Important Notice - Address Change*\n\n` +
+              `Changing address is connected to additional delivery charges...\n` +
+              `💰 *50k - 200k or even more*\n\n` +
+              `That additional charge will be transferred to QRS payment.\n\n` +
               `Current address: ${currentAddress}\n\n` +
-              (isDispatched
-                ? "⚠️ *Warning:* Your order has already been dispatched. Extra delivery charges may apply.\n\n"
-                : "✅ Your order hasn't been dispatched yet. We can update the address.\n\n") +
-              `-------------------------------------------------------------------\n\n` +
-              "If your delivery is scheduled in less than 24 hours, we recommend calling our agent directly for assistance and to confirm all details.\n\n" +
-              "**Please note**: Additional charges may apply if the delivery location is further than originally stated.\n\n"
-          );
-          await sendWhatsAppMessage(
-            phoneNumber,
-
-            "Plz provide your new adress :"
+              `Are you sure you want to change address?\n` +
+              `1. ✅ Yes\n` +
+              `2. ❌ No`
           );
         } else {
           await sendWhatsAppMessage(
@@ -5337,6 +5360,194 @@ Don't be scared call us and we will help you xxx-xxx`
           );
         }
         break;
+
+      case "address_change_confirm":
+        const addressConfirmChoice = text.trim();
+        
+        if (addressConfirmChoice === "1" || addressConfirmChoice.toLowerCase() === "yes") {
+          // User confirmed - proceed to area selection
+          const activeAreasForChange = await getActiveAreas();
+          const areasDisplayForChange = formatAreasForDisplay(activeAreasForChange);
+          
+          await customer.updateConversationState("address_change_select_area");
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `📍 *Select your new delivery area:*\n\n${areasDisplayForChange}`
+          );
+        } else if (addressConfirmChoice === "2" || addressConfirmChoice.toLowerCase() === "no") {
+          // User cancelled
+          await customer.clearSupportFlow();
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "✅ Address change cancelled. Your delivery address remains unchanged."
+          );
+          setTimeout(async () => {
+            await sendMainMenu(phoneNumber, customer);
+          }, 2000);
+        } else {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "Please select:\n1. ✅ Yes\n2. ❌ No"
+          );
+        }
+        break;
+
+      case "address_change_select_area":
+        const areaIndexForChange = parseInt(text) - 1;
+        const activeAreasChange = await getActiveAreas();
+        
+        if (areaIndexForChange >= 0 && areaIndexForChange < activeAreasChange.length) {
+          const selectedAreaForChange = activeAreasChange[areaIndexForChange];
+          const flowDataArea = customer.currentSupportFlow.tempData;
+          
+          // Store selected area in temp data
+          await customer.updateSupportFlow({
+            currentStep: "address_change_google_map",
+            tempData: {
+              ...flowDataArea,
+              newArea: selectedAreaForChange.area,
+              newState: selectedAreaForChange.state,
+              newAreaDisplayName: selectedAreaForChange.displayName,
+              additionalCharge: selectedAreaForChange.truckPrice || 0,
+            },
+          });
+          
+          await customer.updateConversationState("address_change_google_map");
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `✅ Area selected: ${selectedAreaForChange.displayName}\n` +
+              (selectedAreaForChange.truckPrice > 0 
+                ? `💰 Additional charge: ${formatRupiah(selectedAreaForChange.truckPrice)}\n\n` 
+                : `✅ No additional delivery charge for this area.\n\n`) +
+              `📍 Please provide your Google Maps location link:`
+          );
+        } else {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `❌ Please select a valid area number (1-${activeAreasChange.length}).`
+          );
+        }
+        break;
+
+      case "address_change_google_map":
+        // Validate Google Maps link
+        if (
+          !text.includes("maps.google") &&
+          !text.includes("goo.gl") &&
+          !text.startsWith("https://maps") &&
+          !text.includes("maps.app.goo.gl")
+        ) {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "Please send a valid Google Maps link. It should include 'maps.google' or 'goo.gl'."
+          );
+          return;
+        }
+        
+        const flowDataMap = customer.currentSupportFlow.tempData;
+        
+        await customer.updateSupportFlow({
+          currentStep: "address_change_full_address",
+          tempData: {
+            ...flowDataMap,
+            googleMapLink: text,
+          },
+        });
+        
+        await customer.updateConversationState("address_change_full_address");
+        await sendWhatsAppMessage(
+          phoneNumber,
+          `✅ Location received!\n\n📝 Now please enter your complete address (house number, street, landmarks, etc.):`
+        );
+        break;
+
+      case "address_change_full_address":
+        const newFullAddress = text.trim();
+        const flowDataFinal = customer.currentSupportFlow.tempData;
+
+        // Create address change ticket with full details
+        const addressChangeTicketData = {
+          type: "delivery_issue",
+          subType: "change_delivery_address",
+          orderId: flowDataFinal.orderId,
+          deliveryData: {
+            currentAddress: flowDataFinal.currentAddress,
+            newArea: flowDataFinal.newArea,
+            newState: flowDataFinal.newState,
+            newAddress: newFullAddress,
+            googleMapLink: flowDataFinal.googleMapLink,
+            additionalCharge: flowDataFinal.additionalCharge,
+            isOrderDispatched: flowDataFinal.isDispatched,
+            extraChargesApplicable: true,
+          },
+          issueDetails: `Customer requested address change from "${flowDataFinal.currentAddress}" to "${newFullAddress}" (Area: ${flowDataFinal.newAreaDisplayName})`,
+          status: "open",
+        };
+
+        await customer.createSupportTicket(addressChangeTicketData);
+
+        // Update order with new address
+        const orderIdxChange = customer.orderHistory.findIndex(
+          (order) => order.orderId === flowDataFinal.orderId
+        );
+        if (orderIdxChange !== -1) {
+          customer.orderHistory[orderIdxChange].deliveryLocation = `${flowDataFinal.newState} - ${flowDataFinal.newArea}`;
+          customer.orderHistory[orderIdxChange].deliveryAddress = {
+            area: flowDataFinal.newArea,
+            state: flowDataFinal.newState,
+            fullAddress: newFullAddress,
+            googleMapLink: flowDataFinal.googleMapLink,
+          };
+          
+          // Add additional delivery charge if applicable
+          if (flowDataFinal.additionalCharge > 0) {
+            customer.orderHistory[orderIdxChange].deliveryCharge = 
+              (customer.orderHistory[orderIdxChange].deliveryCharge || 0) + flowDataFinal.additionalCharge;
+          }
+
+          if (!customer.contextData) {
+            customer.contextData = {};
+          }
+          customer.contextData.locationDetails = newFullAddress;
+
+          if (!customer.addressChangeHistory) {
+            customer.addressChangeHistory = [];
+          }
+
+          customer.addressChangeHistory.push({
+            orderId: flowDataFinal.orderId,
+            oldAddress: flowDataFinal.currentAddress,
+            newAddress: newFullAddress,
+            newArea: flowDataFinal.newAreaDisplayName,
+            googleMapLink: flowDataFinal.googleMapLink,
+            additionalCharge: flowDataFinal.additionalCharge,
+            requestedAt: new Date(),
+            status: "pending",
+          });
+
+          await customer.save();
+        }
+
+        await sendWhatsAppMessage(
+          phoneNumber,
+          `✅ *Address Change Request Submitted!*\n\n` +
+            `📦 Order: #${flowDataFinal.orderId}\n` +
+            `📍 New Area: ${flowDataFinal.newAreaDisplayName}\n` +
+            `🏠 New Address: ${newFullAddress}\n` +
+            (flowDataFinal.additionalCharge > 0 
+              ? `💰 Additional Charge: ${formatRupiah(flowDataFinal.additionalCharge)}\n\n` 
+              : `\n`) +
+            `⚠️ Additional charges will be transferred to QRS payment.\n\n` +
+            `Our team will contact you shortly to confirm the changes.\n` +
+            `Thank you for your patience! 😊`
+        );
+
+        await customer.clearSupportFlow();
+        setTimeout(async () => {
+          await sendMainMenu(phoneNumber, customer);
+        }, 3000);
+        break;
+
       case "new_address_input":
         const newAddress = text.trim();
         const flowData = customer.currentSupportFlow.tempData;
@@ -7889,6 +8100,10 @@ Don't worry — the driver will reach you and deliver the products safely..` +
               `----------------------------------------------------\n` +
               `⚠️ All information will be transferred to the new number and this number will lose access.`;
             await sendWhatsAppMessage(phoneNumber, switchListMsg);
+             switchListMsg +=
+      
+              `enter 0 to return to main menu.`;
+            await sendWhatsAppMessage(phoneNumber, switchListMsg);
             break;
 
           case "4":
@@ -10351,6 +10566,37 @@ Don't worry — the driver will reach you and deliver the products safely..` +
           break;
         }
 
+        // ============= NEW CUSTOMER ONLY REFERRAL VALIDATION =============
+        // Check if this customer can be referred (new customers only)
+        try {
+          const referralValidation = await Customer.canBeReferred(rawNumber);
+          
+          if (!referralValidation.canRefer) {
+            let errorMessage = `❌ *Cannot Refer This Customer*\n\n`;
+            errorMessage += `📋 Reason: ${referralValidation.reason}\n\n`;
+            
+            if (referralValidation.existingReferrer) {
+              errorMessage += `👤 This customer was already referred by: ${referralValidation.existingReferrer}\n\n`;
+            }
+            
+            errorMessage += `ℹ️ *Referral Rule:*\n`;
+            errorMessage += `• Referrals only apply to NEW customers\n`;
+            errorMessage += `• Customers already in the system cannot be referred\n\n`;
+            errorMessage += `Send another number or type '0' for main menu.`;
+            
+            await sendWhatsAppMessage(phoneNumber, errorMessage);
+            break;
+          }
+          
+          // Log successful validation
+          console.log(`✅ Referral Validation Passed for ${rawNumber}: ${referralValidation.reason}`);
+          
+        } catch (validationError) {
+          console.error("Error validating referral:", validationError);
+          // Continue with referral if validation fails (fail-open for better UX)
+        }
+        // ============= END REFERRAL VALIDATION =============
+
         // Store contact
         const newContact = {
           name: "Contact",
@@ -10528,6 +10774,7 @@ Don't worry — the driver will reach you and deliver the products safely..` +
         // ===================== HELPER FUNCTIONS =====================
 
         // Function to create referral record when sending referral
+        // Now includes 5-day rule validation and direct linking for existing customers
         async function createReferralRecord(
           referrerCustomer,
           referredPhoneNumber,
@@ -10541,7 +10788,22 @@ Don't worry — the driver will reach you and deliver the products safely..` +
               `🔄 Creating referral record for ${normalizedPhone} by ${referrerCustomer.name}`
             );
 
-            // 🎯 SOLUTION 1: Store referral in a separate tracking array (not customersReferred)
+            // ============= NEW CUSTOMER ONLY VALIDATION =============
+            const referralValidation = await Customer.canBeReferred(normalizedPhone);
+            
+            if (!referralValidation.canRefer) {
+              console.log(`❌ Referral Rejected: ${referralValidation.reason}`);
+              return {
+                success: false,
+                message: referralValidation.reason,
+                existingCustomerBlocked: true
+              };
+            }
+            
+            console.log(`✅ New Customer Validation Passed: ${referralValidation.reason}`);
+            // ============= END VALIDATION =============
+
+            // 🎯 For NEW customers only - Store in pending referrals
             // Initialize referral tracking if not exists
             if (!referrerCustomer.referralTracking) {
               referrerCustomer.referralTracking = {
@@ -10605,6 +10867,7 @@ Don't worry — the driver will reach you and deliver the products safely..` +
               return {
                 success: true,
                 message: "Referral tracking initiated in pending referrals",
+                isNewCustomer: true,
                 totalPendingReferrals:
                   referrerCustomer.referralTracking.pendingReferrals.length,
               };
@@ -10877,6 +11140,7 @@ Don't worry — the driver will reach you and deliver the products safely..` +
         }
 
         // Function to add commission earned to referrer
+        // Now also credits the commission wallet (banking style ledger)
         async function addCommissionEarned(
           referrerCustomer,
           orderData,
@@ -10889,8 +11153,12 @@ Don't worry — the driver will reach you and deliver the products safely..` +
             }, 0);
 
             const commissionRate =
-              referrerCustomer.foremanStatus?.commissionRate || 5;
+              referrerCustomer.foremanStatus?.commissionRate || 1; // Updated to 1% default
             const commissionAmount = (eligibleAmount * commissionRate) / 100;
+
+            if (commissionAmount <= 0) {
+              return 0;
+            }
 
             // Initialize commission tracking if not exists
             if (!referrerCustomer.commissionTracking) {
@@ -10902,7 +11170,7 @@ Don't worry — the driver will reach you and deliver the products safely..` +
               };
             }
 
-            // Add commission
+            // Add commission to tracking
             referrerCustomer.commissionTracking.totalCommissionEarned +=
               commissionAmount;
             referrerCustomer.commissionTracking.availableCommission +=
@@ -10922,7 +11190,57 @@ Don't worry — the driver will reach you and deliver the products safely..` +
               isPaid: false,
             });
 
+            // ============= COMMISSION WALLET (Banking Style) =============
+            // Also credit the commission wallet with ledger entry
+            if (!referrerCustomer.commissionWallet) {
+              referrerCustomer.commissionWallet = {
+                currentBalance: 0,
+                totalCredits: 0,
+                totalDebits: 0,
+                ledger: []
+              };
+            }
+            
+            const newBalance = referrerCustomer.commissionWallet.currentBalance + commissionAmount;
+            
+            // Get referred customer phone
+            let referredPhone = "Unknown";
+            try {
+              const refCust = await Customer.findById(referredCustomerInfo.customerId);
+              if (refCust && refCust.phoneNumber && refCust.phoneNumber[0]) {
+                referredPhone = refCust.phoneNumber[0];
+              }
+            } catch (e) {
+              console.log("Could not get referred customer phone");
+            }
+            
+            // Add ledger entry (banking style)
+            referrerCustomer.commissionWallet.ledger.push({
+              transactionId: "CWT" + Date.now().toString().slice(-10),
+              date: new Date(),
+              billNumber: orderData.orderId,
+              fromReferredCustomer: {
+                customerId: referredCustomerInfo.customerId.toString(),
+                customerName: referredCustomerInfo.customerName,
+                phoneNumber: referredPhone
+              },
+              type: "add_commission",
+              credit: commissionAmount,
+              debit: 0,
+              balanceAfter: newBalance,
+              note: `ADD commission from order ${orderData.orderId}`
+            });
+            
+            // Update wallet totals
+            referrerCustomer.commissionWallet.currentBalance = newBalance;
+            referrerCustomer.commissionWallet.totalCredits += commissionAmount;
+            // ============= END COMMISSION WALLET =============
+
             await referrerCustomer.save();
+            
+            console.log(`💰 Commission credited: Rs.${commissionAmount.toFixed(2)} to ${referrerCustomer.name}'s wallet`);
+            console.log(`📊 New wallet balance: Rs.${newBalance.toFixed(2)}`);
+            
             return commissionAmount;
           } catch (error) {
             console.error("Error adding commission earned:", error);
@@ -12549,4 +12867,31 @@ console.log(`📱 Instance ID: ${ULTRAMSG_CONFIG.instanceId}`);
 console.log(`🔗 Webhook endpoint: /webhook`);
 console.log(`✅ Ready to receive messages via Ultramsg webhooks`);
 
+// Export function for external use (e.g., from customers.js)
+async function sendPickupConfirmationToCustomer(customer, order) {
+  try {
+    const phoneNumber = customer.phoneNumber;
+    const currentDateTime = new Date().toLocaleString('en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    const confirmationMessage = 
+      `✅ *Order Pickup Confirmed!*\n\n` +
+      `Thank you for picking up your order.\n\n` +
+      `📦 *Order ID:* #${order.orderId}\n` +
+      `📅 *Pickup Date & Time:* ${currentDateTime}\n\n` +
+      `We hope everything is perfect! If you have any questions, feel free to contact support.\n\n` +
+      `Thank you for choosing us! 😊`;
+
+    await sendWhatsAppMessage(phoneNumber, confirmationMessage);
+    console.log(`✅ Pickup confirmation sent for order ${order.orderId} to ${customer.phoneNumber}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Error sending pickup confirmation:`, error);
+    return false;
+  }
+}
+
 module.exports = router;
+module.exports.sendPickupConfirmationToCustomer = sendPickupConfirmationToCustomer;

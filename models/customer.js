@@ -948,7 +948,7 @@ const foremanStatusSchema = new mongoose.Schema(
 
     commissionRate: {
       type: Number,
-      default: 5,
+      default: 1, // 1% commission rate (updated for foreman referral system)
     },
 
     statusHistory: [
@@ -1045,6 +1045,43 @@ const commissionTrackingSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+// ============= COMMISSION WALLET - BANKING STYLE =============
+const commissionWalletSchema = new mongoose.Schema({
+  currentBalance: { type: Number, default: 0 },
+  totalCredits: { type: Number, default: 0 },
+  totalDebits: { type: Number, default: 0 },
+  
+  ledger: [{
+    transactionId: {
+      type: String,
+      default: function() {
+        return "CWT" + Date.now().toString().slice(-10);
+      }
+    },
+    date: { type: Date, default: Date.now },
+    billNumber: String,
+    fromReferredCustomer: {
+      customerId: String,
+      customerName: String,
+      phoneNumber: String
+    },
+    type: {
+      type: String,
+      enum: ["add_commission", "shop_use", "withdrawal", "adjustment"],
+      required: true
+    },
+    credit: { type: Number, default: 0 },
+    debit: { type: Number, default: 0 },
+    balanceAfter: { type: Number, required: true },
+    note: String,
+    processedBy: {
+      staffId: String,
+      staffName: String
+    },
+    isImmutable: { type: Boolean, default: true }
+  }]
+}, { _id: false });
 
 // Main customer schema with all enhancements
 const customerSchema = new mongoose.Schema(
@@ -1357,6 +1394,7 @@ const customerSchema = new mongoose.Schema(
       name: String,
       videoId: String,
       dateReferred: Date,
+      isLocked: { type: Boolean, default: true }, // Once referred, cannot be changed
     },
 
     referralRewards: [
@@ -1372,6 +1410,7 @@ const customerSchema = new mongoose.Schema(
 
     foremanStatus: foremanStatusSchema,
     commissionTracking: commissionTrackingSchema,
+    commissionWallet: commissionWalletSchema,
 
     shoppingHistory: [shoppingHistorySchema],
 
@@ -2128,6 +2167,129 @@ customerSchema.methods.updateCommissionEligibility = function (
     reason: reason,
   });
 
+  return this.save();
+};
+
+// ============= NEW CUSTOMER ONLY REFERRAL VALIDATION =============
+// RULE: Only NEW customers (not in system) can be referred
+customerSchema.statics.canBeReferred = async function(phoneNumber) {
+  const Customer = this;
+  
+  // Find customer by phone number
+  const existingCustomer = await Customer.findOne({ 
+    phoneNumber: { $in: [phoneNumber] } 
+  });
+  
+  // NEW CUSTOMER - Can be referred
+  if (!existingCustomer) {
+    return { 
+      canRefer: true, 
+      isNewCustomer: true,
+      reason: "New customer - can be referred" 
+    };
+  }
+  
+  // EXISTING CUSTOMER - Cannot be referred (already in system)
+  // Check if already has referrer for better error message
+  if (existingCustomer.referredBy && existingCustomer.referredBy.customerId) {
+    return { 
+      canRefer: false, 
+      reason: "Customer already has a referrer",
+      existingReferrer: existingCustomer.referredBy.name,
+      customerId: existingCustomer._id
+    };
+  }
+  
+  // EXISTING CUSTOMER - Reject (not a new customer)
+  return { 
+    canRefer: false, 
+    reason: "This phone number is already registered in the system. Referrals only apply to new customers.",
+    customerId: existingCustomer._id,
+    customerName: existingCustomer.name,
+    isExistingCustomer: true
+  };
+};
+
+// ============= COMMISSION WALLET METHODS =============
+
+// Credit commission to wallet (when referred customer places order)
+customerSchema.methods.addCommissionCredit = async function(
+  billNumber,
+  amount,
+  fromCustomerId,
+  fromCustomerName,
+  fromCustomerPhone,
+  note
+) {
+  // Initialize wallet if not exists
+  if (!this.commissionWallet) {
+    this.commissionWallet = {
+      currentBalance: 0,
+      totalCredits: 0,
+      totalDebits: 0,
+      ledger: []
+    };
+  }
+  
+  const newBalance = this.commissionWallet.currentBalance + amount;
+  
+  // Add ledger entry
+  this.commissionWallet.ledger.push({
+    date: new Date(),
+    billNumber: billNumber,
+    fromReferredCustomer: {
+      customerId: fromCustomerId,
+      customerName: fromCustomerName,
+      phoneNumber: fromCustomerPhone
+    },
+    type: "add_commission",
+    credit: amount,
+    debit: 0,
+    balanceAfter: newBalance,
+    note: note || "ADD commission"
+  });
+  
+  // Update totals
+  this.commissionWallet.currentBalance = newBalance;
+  this.commissionWallet.totalCredits += amount;
+  
+  return this.save();
+};
+
+// Debit from commission wallet (shop use or withdrawal)
+customerSchema.methods.debitCommissionWallet = async function(
+  amount,
+  type, // "shop_use" or "withdrawal"
+  billNumber,
+  staffInfo,
+  note
+) {
+  if (!this.commissionWallet) {
+    throw new Error("No commission wallet found");
+  }
+  
+  if (this.commissionWallet.currentBalance < amount) {
+    throw new Error(`Insufficient balance. Available: ${this.commissionWallet.currentBalance}, Requested: ${amount}`);
+  }
+  
+  const newBalance = this.commissionWallet.currentBalance - amount;
+  
+  // Add ledger entry
+  this.commissionWallet.ledger.push({
+    date: new Date(),
+    billNumber: billNumber,
+    type: type,
+    credit: 0,
+    debit: amount,
+    balanceAfter: newBalance,
+    note: note || (type === "shop_use" ? "Shop use" : "Withdrawal"),
+    processedBy: staffInfo
+  });
+  
+  // Update totals
+  this.commissionWallet.currentBalance = newBalance;
+  this.commissionWallet.totalDebits += amount;
+  
   return this.save();
 };
 
