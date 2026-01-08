@@ -89,6 +89,7 @@ const productSchema = new Schema(
 
     // Child-only
     parentProduct: String,
+    normalId: String,  // Separate Normal ID for Child products (e.g., N0012)
     varianceName: String,
     subtitleDescription: String,
 

@@ -134,12 +134,51 @@ router.post("/", async (req, res) => {
     const noReorder = d.noReorder === "true" || d.noReorder === true;
 
     // 6) Build and save the document
+    
+    // ✅ Generate Normal ID for Child products
+    let normalId = null;
+    if (d.productType === "Child") {
+      try {
+        // Find the highest Normal ID from both Normal products and Child products with normalId
+        const lastNormalProduct = await Product.findOne({
+          productId: { $regex: /^N/ }
+        }).sort({ productId: -1 }).lean();
+        
+        const lastChildWithNormalId = await Product.findOne({
+          normalId: { $exists: true, $ne: null }
+        }).sort({ normalId: -1 }).lean();
+        
+        // Get the highest number from both sources
+        let maxNum = 0;
+        
+        if (lastNormalProduct && lastNormalProduct.productId) {
+          const normalNum = parseInt(lastNormalProduct.productId.slice(1)) || 0;
+          maxNum = Math.max(maxNum, normalNum);
+        }
+        
+        if (lastChildWithNormalId && lastChildWithNormalId.normalId) {
+          const childNormalNum = parseInt(lastChildWithNormalId.normalId.slice(1)) || 0;
+          maxNum = Math.max(maxNum, childNormalNum);
+        }
+        
+        // Generate next Normal ID
+        normalId = `N${String(maxNum + 1).padStart(4, '0')}`;
+        console.log(`✅ Generated Normal ID for Child product: ${normalId}`);
+      } catch (err) {
+        console.error("Error generating Normal ID:", err);
+      }
+    }
+    
     const product = new Product({
       productType: d.productType,
       productName,
       description,
       varianceName: d.varianceName,
       subtitleDescription: d.subtitleDescription,
+      
+      // ✅ Parent-child relationship
+      parentProduct: d.parentProduct,
+      normalId: normalId,  // ✅ Assign Normal ID to Child products
 
       globalTradeItemNumber: d.globalTradeItemNumber,
       k3lNumber: d.k3lNumber,
@@ -254,7 +293,7 @@ router.get("/", async (req, res) => {
 
     const products = await Product.find(query)
       .select(
-        "productId productType productName categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt selectedSupplierId supplierName supplierContact supplierEmail supplierAddress"
+        "productId productType productName normalId parentProduct categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt selectedSupplierId supplierName supplierContact supplierEmail supplierAddress"
       )
       .lean();
 
@@ -2218,6 +2257,11 @@ router.put("/:id", uploadFields, async (req, res) => {
       updates.globalTradeItemNumber = b.globalTradeItemNumber;
     if (b.k3lNumber !== undefined) updates.k3lNumber = b.k3lNumber;
     if (b.sniNumber !== undefined) updates.sniNumber = b.sniNumber;
+    
+    // ✅ Parent-child relationship
+    if (b.parentProduct !== undefined) updates.parentProduct = b.parentProduct;
+    if (b.varianceName !== undefined) updates.varianceName = b.varianceName;
+    
     if (b.alternateSupplier !== undefined)
       updates.alternateSupplier = b.alternateSupplier;
     if (b.supplierName !== undefined) updates.supplierName = b.supplierName;
@@ -2298,19 +2342,22 @@ router.delete("/:id", async (req, res) => {
         });
     }
 
-    // remove images from disk…
-    if (p.masterImage) {
+    // remove images from disk… (with type checking)
+    if (p.masterImage && typeof p.masterImage === 'string') {
       const mp = path.join(__dirname, "../public", p.masterImage);
       if (fs.existsSync(mp)) fs.unlinkSync(mp);
     }
     (p.moreImages || []).forEach((imgPath) => {
-      const full = path.join(__dirname, "../public", imgPath);
-      if (fs.existsSync(full)) fs.unlinkSync(full);
+      if (imgPath && typeof imgPath === 'string') {
+        const full = path.join(__dirname, "../public", imgPath);
+        if (fs.existsSync(full)) fs.unlinkSync(full);
+      }
     });
 
-    await p.remove();
+    await p.deleteOne();
     res.json({ success: true, data: {} });
   } catch (err) {
+    console.error("❌ Delete product error:", err);
     if (err.kind === "ObjectId")
       return res
         .status(404)
