@@ -1512,15 +1512,16 @@ async function getDiscountedProducts() {
 
     // Fetch products from database
     const products = await Product.find(query)
-      .select("productId productName discountConfig NormalPrice Stock")
+      .select("_id productId productName discountConfig NormalPrice Stock")
       .limit(20) // Limit to 20 products for better UX
       .lean();
 
     console.log(`Found ${products.length} products with active discounts`);
 
-    // Transform products to match the expected format
+    // Transform products to match the expected format - use _id for consistent lookup
     const transformedProducts = products.map((product) => ({
-      id: product.productId,
+      id: product._id.toString(), // Use MongoDB _id for consistent lookup
+      productId: product.productId, // Keep for reference
       name: product.productName,
       originalPrice:
         product.discountConfig.originalPrice || product.NormalPrice,
@@ -1879,8 +1880,8 @@ async function processChatMessage(phoneNumber, text, message) {
             break;
 
           case "3":
-            // Avail Discounts - Check batch discount eligibility
-            await customer.updateConversationState("batch_discount_menu");
+            // Avail Discounts - Show discounted products and eligible categories
+            // State will be updated inside sendBatchDiscountEligibility after products are shown
             await sendBatchDiscountEligibility(phoneNumber, customer);
             break;
 
@@ -1963,10 +1964,88 @@ async function processChatMessage(phoneNumber, text, message) {
       // ============================================================================
       // BATCH DISCOUNT FLOW HANDLERS
       // ============================================================================
-      case "batch_discount_menu":
+      case "batch_discount_menu": {
+        let eligibleCats = customer.contextData?.eligibleBatchCategories || [];
+        let discountProductList = customer.contextData?.discountProductList || [];
+        const textUpper = text.toUpperCase().trim();
+        
+        console.log(`batch_discount_menu - Input: "${text}", Products: ${discountProductList.length}, Categories: ${eligibleCats.length}`);
+        
+        // If context data is empty, reload the discount menu
+        if (discountProductList.length === 0 && eligibleCats.length === 0) {
+          console.log("Context data empty, reloading discount menu...");
+          await sendBatchDiscountEligibility(phoneNumber, customer);
+          break;
+        }
+        
+        // Check if input is a letter (A-Z) for category selection
+        if (/^[A-Z]$/.test(textUpper)) {
+          const catIdx = textUpper.charCodeAt(0) - 65; // Convert A=0, B=1, etc.
+          if (catIdx >= 0 && catIdx < eligibleCats.length) {
+            const selectedCat = eligibleCats[catIdx];
+            customer.contextData.selectedBatchCategory = selectedCat;
+            await customer.save();
+            await sendBatchDiscountProducts(phoneNumber, customer, selectedCat);
+          } else {
+            await sendWhatsAppMessage(
+              phoneNumber,
+              "❌ Invalid category. Please choose a valid letter from the list or type *0* for main menu."
+            );
+          }
+          break;
+        }
+        
+        // Check if input is a number for product selection
+        const prodIdx = parseInt(text, 10) - 1;
+        console.log(`Parsed product index: ${prodIdx}, list length: ${discountProductList.length}`);
+        
+        if (!isNaN(prodIdx) && prodIdx >= 0 && prodIdx < discountProductList.length) {
+          const selectedProductId = discountProductList[prodIdx];
+          console.log(`Looking up product with _id: "${selectedProductId}"`);
+          
+          // Now using findById since we store MongoDB _id
+          const product = await Product.findById(selectedProductId);
+          console.log(`Product found:`, product ? product.productName : 'NOT FOUND');
+          
+          if (product) {
+            customer.contextData.productId = product._id.toString();
+            customer.contextData.productName = product.productName;
+            customer.conversationState = "product_details";
+            customer.lastInteraction = new Date();
+            await customer.save();
+            await sendProductDetails(phoneNumber, customer, product);
+          } else {
+            await sendWhatsAppMessage(
+              phoneNumber,
+              "❌ Product not found. Please try again or type *0* for main menu."
+            );
+          }
+        } else if (discountProductList.length === 0) {
+          // No products but user typed a number - reload the menu
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "Loading discount products..."
+          );
+          await sendBatchDiscountEligibility(phoneNumber, customer);
+        } else {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "❌ Invalid selection. Please choose a product number or category letter from the list, or type *0* for main menu."
+          );
+        }
+        break;
+      }
+
       case "batch_discount_categories": {
         const eligibleCats = customer.contextData?.eligibleBatchCategories || [];
         const textLower = text.toLowerCase().trim();
+        
+        // If no categories, go back to main discount menu
+        if (eligibleCats.length === 0) {
+          console.log("eligibleBatchCategories empty, reloading discount menu");
+          await sendBatchDiscountEligibility(phoneNumber, customer);
+          break;
+        }
         
         // Handle "A" to see all eligible products
         if (textLower === "a") {
@@ -1997,6 +2076,13 @@ async function processChatMessage(phoneNumber, text, message) {
         const batchProducts = customer.contextData?.batchProductList || [];
         const prodIdx = parseInt(text, 10) - 1;
         
+        // If batchProducts is empty, go back to main discount menu
+        if (batchProducts.length === 0) {
+          console.log("batchProductList empty, returning to discount menu");
+          await sendBatchDiscountEligibility(phoneNumber, customer);
+          break;
+        }
+        
         if (prodIdx >= 0 && prodIdx < batchProducts.length) {
           const selectedProdId = batchProducts[prodIdx];
           const product = await Product.findById(selectedProdId);
@@ -2004,8 +2090,9 @@ async function processChatMessage(phoneNumber, text, message) {
           if (product) {
             customer.contextData.productId = selectedProdId;
             customer.contextData.productName = product.productName;
+            customer.conversationState = "product_details";
+            customer.lastInteraction = new Date();
             await customer.save();
-            await customer.updateConversationState("product_details");
             await sendProductDetails(phoneNumber, customer, product);
           } else {
             await sendWhatsAppMessage(
@@ -12253,20 +12340,69 @@ async function sendDiscountedProductsList(phoneNumber, customer) {
 }
 
 // ============================================================================
-// BATCH DISCOUNT ELIGIBILITY - Shows eligible discounts based on 8 categories
+// BATCH DISCOUNT ELIGIBILITY - Shows discounted products + eligible categories
 // ============================================================================
 async function sendBatchDiscountEligibility(phoneNumber, customer) {
   console.log(`Checking batch discount eligibility for ${phoneNumber}`);
 
   try {
-    // Get or create eligibility record for this customer
-    let eligibility = await DiscountEligibility.findOne({ phoneNumber: phoneNumber });
+    // Initialize contextData if needed
+    if (!customer.contextData) {
+      customer.contextData = {};
+    }
+
+    // First, show all discounted products (like original behavior)
+    await sendWhatsAppMessage(
+      phoneNumber,
+      "🎁 *Special Discounts Available!* 🎁\n\nHere are all our current discounted products:"
+    );
+
+    // Get all discounted products
+    const discountProducts = await getDiscountedProducts();
+    console.log(`Found ${discountProducts.length} discounted products`);
+    
+    // Store product IDs for selection (using productId strings like "P001")
+    customer.contextData.discountProductList = discountProducts.map(p => p.id);
+    console.log(`Stored discountProductList:`, customer.contextData.discountProductList);
+    
+    if (discountProducts.length > 0) {
+      // Create a single product list message
+      let productsMessage = "📋 *Discounted Products:*\n\n";
+
+      // Add all products to the message with formatting
+      discountProducts.forEach((product, index) => {
+        const productNumber = index + 1;
+        const discountPercent = Math.round(
+          (1 - product.discountPrice / product.originalPrice) * 100
+        );
+
+        productsMessage += `${productNumber}. ${product.name}\n`;
+        productsMessage += `💰 Price: ${formatRupiah(product.discountPrice)} `;
+        productsMessage += `(${discountPercent}% OFF! Was: ${formatRupiah(
+          product.originalPrice
+        )})\n`;
+        productsMessage += `📦 Stock: ${product.stock} available\n\n`;
+      });
+
+      await sendWhatsAppMessage(phoneNumber, productsMessage);
+    } else {
+      await sendWhatsAppMessage(
+        phoneNumber,
+        "📋 No general discounted products available right now."
+      );
+    }
+
+    // Now check for special discount categories the customer is eligible for
+    // Update customer fields first from latest data
+    const customerPhone = phoneNumber.replace(/@c\.us|@s\.whatsapp\.net/g, "");
+    
+    let eligibility = await DiscountEligibility.findOne({ phoneNumber: customerPhone });
     
     if (!eligibility) {
       // Create new eligibility record with customer data
       eligibility = new DiscountEligibility({
         customerId: customer._id,
-        phoneNumber: phoneNumber,
+        phoneNumber: customerPhone,
         isForeman: customer.isForeman || false,
         hasCommission: customer.hasCommission || false,
         referralCount: customer.referralCount || 0,
@@ -12276,83 +12412,90 @@ async function sendBatchDiscountEligibility(phoneNumber, customer) {
         totalSpending: customer.totalSpending || 0,
         largestSinglePurchase: customer.largestSinglePurchase || 0,
       });
+    } else {
+      // Update existing eligibility with latest customer data
+      eligibility.isForeman = customer.isForeman || false;
+      eligibility.hasCommission = customer.hasCommission || false;
+      eligibility.referralCount = customer.referralCount || 0;
+      eligibility.totalSpending = customer.totalSpending || 0;
+      eligibility.largestSinglePurchase = customer.largestSinglePurchase || 0;
     }
 
-    // Update eligibility based on latest customer data
-    await eligibility.updateEligibility();
+    // Update eligibility categories based on latest customer data
+    eligibility.updateEligibility();
+    await eligibility.save();
+    
+    console.log(`Eligibility categories:`, eligibility.eligibleCategories);
     
     const eligibleCategories = eligibility.eligibleCategories
-      .filter(cat => cat.isEligible)
+      .filter(cat => cat.isActive)
       .map(cat => cat.category);
+
+    console.log(`Eligible categories for customer:`, eligibleCategories);
 
     // Category display names for chatbot
     const categoryDisplay = {
-      foremen: { name: "foremen", emoji: "👷" },
-      foremen_commission: { name: "foremen+", emoji: "👷‍♂️" },
-      referral_3_days: { name: "You referred 3", emoji: "🔗" },
-      new_customer_referred: { name: "new_customer_ref", emoji: "🆕" },
-      new_customer: { name: "Hey new customer", emoji: "👋" },
-      shopping_30m: { name: "VIP", emoji: "💎" },
-      shopping_100m_60d: { name: "Valued customer", emoji: "🏆" },
-      everyone: { name: "Discount", emoji: "🏷️" },
+      foremen: { name: "Foremen Discounts", emoji: "👷" },
+      foremen_commission: { name: "Foremen+ Special", emoji: "👷‍♂️" },
+      referral_3_days: { name: "Referral Rewards", emoji: "🔗" },
+      new_customer_referred: { name: "New Customer Referral", emoji: "🆕" },
+      new_customer: { name: "New Customer Welcome", emoji: "👋" },
+      shopping_30m: { name: "VIP Exclusive", emoji: "💎" },
+      shopping_100m_60d: { name: "Valued Customer", emoji: "🏆" },
+      everyone: { name: "Everyone Discount", emoji: "🏷️" },
     };
 
-    // Welcome message
-    await sendWhatsAppMessage(
-      phoneNumber,
-      "🎁 *Avail Your Discounts!* 🎁\n\nLet me check what special offers you're eligible for..."
-    );
+    await new Promise(resolve => setTimeout(resolve, 300));
 
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    if (eligibleCategories.length === 0) {
-      // No eligible categories
-      await sendWhatsAppMessage(
-        phoneNumber,
-        "😔 *No Special Offers Available*\n\n" +
-        "You don't currently qualify for any special discount categories.\n\n" +
-        "*How to unlock discounts:*\n" +
-        "• 👷 Become a Foreman\n" +
-        "• 🔗 Refer 3+ friends (AU numbers)\n" +
-        "• 💎 Make purchases over 30M\n" +
-        "• 🆕 New customers get welcome discounts!\n\n" +
-        "Type *3* to see general discounts, or *0* for main menu."
-      );
-      return;
-    }
-
-    // Build eligible categories message
-    let eligibleMessage = "✅ *Your Eligible Discount Categories:*\n\n";
-    let categoryIndex = 1;
+    // Build the combined menu
+    let menuMessage = "";
     const eligibleCatList = [];
-
-    for (const cat of eligibleCategories) {
-      const display = categoryDisplay[cat];
-      if (display) {
-        eligibleMessage += `${categoryIndex}. ${display.emoji} ${display.name}\n`;
-        eligibleCatList.push(cat);
-        categoryIndex++;
-      }
+    
+    // Start numbering after the products
+    const productCount = discountProducts.length;
+    
+    if (eligibleCategories.length > 0) {
+      menuMessage = "✨ *Your Special Discount Categories:*\n\n";
+      
+      eligibleCategories.forEach((cat, idx) => {
+        const display = categoryDisplay[cat];
+        if (display) {
+          menuMessage += `${String.fromCharCode(65 + idx)}. ${display.emoji} ${display.name}\n`;
+          eligibleCatList.push(cat);
+        }
+      });
+      
+      menuMessage += "\n";
     }
 
     // Store eligible categories for selection
-    customer.contextData = customer.contextData || {};
     customer.contextData.eligibleBatchCategories = eligibleCatList;
+    
+    // Update state and save everything together
+    customer.conversationState = "batch_discount_menu";
+    customer.lastInteraction = new Date();
     await customer.save();
+    console.log(`Saved customer context - Products: ${customer.contextData.discountProductList?.length}, Categories: ${eligibleCatList.length}, State: ${customer.conversationState}`);
 
-    eligibleMessage += "\n💡 *Select a category number to see products with special pricing!*\n";
-    eligibleMessage += "Or type *A* to see all your eligible products at once.\n";
-    eligibleMessage += "Type *0* to return to main menu.";
+    // Instructions
+    if (discountProducts.length > 0) {
+      menuMessage += "💡 *Select a product number* (1-" + productCount + ") to view details and add to cart.\n";
+    }
+    if (eligibleCatList.length > 0) {
+      menuMessage += "💡 *Type a letter* (A-" + String.fromCharCode(64 + eligibleCatList.length) + ") to see your special category discounts.\n";
+    }
+    menuMessage += "💡 Type *0* to return to main menu.";
 
-    await sendWhatsAppMessage(phoneNumber, eligibleMessage);
-    await customer.updateConversationState("batch_discount_categories");
+    await sendWhatsAppMessage(phoneNumber, menuMessage);
 
   } catch (error) {
     console.error("Error checking batch discount eligibility:", error);
     await sendWhatsAppMessage(
       phoneNumber,
-      "Sorry, I couldn't check your discount eligibility right now. Please try again later or type 0 for main menu."
+      "Sorry, I couldn't load discounts right now. Please try again later or type 0 for main menu."
     );
+    // Keep state as main_menu so user can try again
+    await customer.updateConversationState("main_menu");
   }
 }
 
@@ -12411,8 +12554,10 @@ async function sendBatchDiscountProducts(phoneNumber, customer, category) {
       return;
     }
 
-    // Store product list for selection
+    // Store product list for selection and update state together
     customer.contextData.batchProductList = allProducts.map(p => p.id.toString());
+    customer.conversationState = "batch_discount_product_select";
+    customer.lastInteraction = new Date();
     await customer.save();
 
     allProducts.forEach((product, index) => {
@@ -12425,7 +12570,6 @@ async function sendBatchDiscountProducts(phoneNumber, customer, category) {
     productsMessage += "💡 Select a product number to add to cart.\nType *0* for main menu.";
 
     await sendWhatsAppMessage(phoneNumber, productsMessage);
-    await customer.updateConversationState("batch_discount_product_select");
 
   } catch (error) {
     console.error("Error fetching batch discount products:", error);

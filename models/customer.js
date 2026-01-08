@@ -1591,6 +1591,12 @@ const customerSchema = new mongoose.Schema(
       subcategoryList: { type: [String], default: [] },
       productList: { type: [String], default: [] },
       weightOptions: { type: [String], default: [] },
+      
+      // Batch discount flow fields
+      discountProductList: { type: [String], default: [] },
+      eligibleBatchCategories: { type: [String], default: [] },
+      selectedBatchCategory: String,
+      batchProductList: { type: [String], default: [] },
 
       editAddressIndex: Number,
       editAddressField: String,
