@@ -24,6 +24,8 @@ const Product = require("../models/Product");
 const Customer = require("../models/customer");
 const { processNewOrder } = require("../utils/referralProcessing");
 const Area = require("../models/Areas");
+const BatchDiscount = require("../models/BatchDiscount");
+const DiscountEligibility = require("../models/DiscountEligibility");
 const mkdirp = require("mkdirp");
 
 // Ultramsg Configuration
@@ -1877,9 +1879,9 @@ async function processChatMessage(phoneNumber, text, message) {
             break;
 
           case "3":
-            // Directly show discounted products without categories
-            await customer.updateConversationState("discount_products");
-            await sendDiscountedProductsList(phoneNumber, customer);
+            // Avail Discounts - Check batch discount eligibility
+            await customer.updateConversationState("batch_discount_menu");
+            await sendBatchDiscountEligibility(phoneNumber, customer);
             break;
 
           case "4":
@@ -1957,6 +1959,68 @@ async function processChatMessage(phoneNumber, text, message) {
             break;
         }
         break;
+
+      // ============================================================================
+      // BATCH DISCOUNT FLOW HANDLERS
+      // ============================================================================
+      case "batch_discount_menu":
+      case "batch_discount_categories": {
+        const eligibleCats = customer.contextData?.eligibleBatchCategories || [];
+        const textLower = text.toLowerCase().trim();
+        
+        // Handle "A" to see all eligible products
+        if (textLower === "a") {
+          await sendWhatsAppMessage(phoneNumber, "📦 *Fetching all your eligible discount products...*");
+          // Show products from all eligible categories
+          for (const cat of eligibleCats) {
+            await sendBatchDiscountProducts(phoneNumber, customer, cat);
+          }
+          break;
+        }
+        
+        const catIdx = parseInt(text, 10) - 1;
+        if (catIdx >= 0 && catIdx < eligibleCats.length) {
+          const selectedCat = eligibleCats[catIdx];
+          customer.contextData.selectedBatchCategory = selectedCat;
+          await customer.save();
+          await sendBatchDiscountProducts(phoneNumber, customer, selectedCat);
+        } else {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "❌ Invalid selection. Please choose a category number from the list, type *A* for all products, or *0* for main menu."
+          );
+        }
+        break;
+      }
+
+      case "batch_discount_product_select": {
+        const batchProducts = customer.contextData?.batchProductList || [];
+        const prodIdx = parseInt(text, 10) - 1;
+        
+        if (prodIdx >= 0 && prodIdx < batchProducts.length) {
+          const selectedProdId = batchProducts[prodIdx];
+          const product = await Product.findById(selectedProdId);
+          
+          if (product) {
+            customer.contextData.productId = selectedProdId;
+            customer.contextData.productName = product.productName;
+            await customer.save();
+            await customer.updateConversationState("product_details");
+            await sendProductDetails(phoneNumber, customer, product);
+          } else {
+            await sendWhatsAppMessage(
+              phoneNumber,
+              "❌ Product not found. Please try again or type *0* for main menu."
+            );
+          }
+        } else {
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "❌ Invalid selection. Please choose a product number from the list or type *0* for main menu."
+          );
+        }
+        break;
+      }
 
       case "shopping_categories":
         // if first time in this state, we have no categoryList yet
@@ -12186,6 +12250,190 @@ async function sendDiscountedProductsList(phoneNumber, customer) {
     phoneNumber,
     "💡 Select a product number to view details and add to cart, or type 0 to return to main menu."
   );
+}
+
+// ============================================================================
+// BATCH DISCOUNT ELIGIBILITY - Shows eligible discounts based on 8 categories
+// ============================================================================
+async function sendBatchDiscountEligibility(phoneNumber, customer) {
+  console.log(`Checking batch discount eligibility for ${phoneNumber}`);
+
+  try {
+    // Get or create eligibility record for this customer
+    let eligibility = await DiscountEligibility.findOne({ phoneNumber: phoneNumber });
+    
+    if (!eligibility) {
+      // Create new eligibility record with customer data
+      eligibility = new DiscountEligibility({
+        customerId: customer._id,
+        phoneNumber: phoneNumber,
+        isForeman: customer.isForeman || false,
+        hasCommission: customer.hasCommission || false,
+        referralCount: customer.referralCount || 0,
+        isReferred: customer.isReferred || false,
+        accountCreatedAt: customer.createdAt || new Date(),
+        firstPurchaseDate: customer.firstPurchaseDate || null,
+        totalSpending: customer.totalSpending || 0,
+        largestSinglePurchase: customer.largestSinglePurchase || 0,
+      });
+    }
+
+    // Update eligibility based on latest customer data
+    await eligibility.updateEligibility();
+    
+    const eligibleCategories = eligibility.eligibleCategories
+      .filter(cat => cat.isEligible)
+      .map(cat => cat.category);
+
+    // Category display names for chatbot
+    const categoryDisplay = {
+      foremen: { name: "foremen", emoji: "👷" },
+      foremen_commission: { name: "foremen+", emoji: "👷‍♂️" },
+      referral_3_days: { name: "You referred 3", emoji: "🔗" },
+      new_customer_referred: { name: "new_customer_ref", emoji: "🆕" },
+      new_customer: { name: "Hey new customer", emoji: "👋" },
+      shopping_30m: { name: "VIP", emoji: "💎" },
+      shopping_100m_60d: { name: "Valued customer", emoji: "🏆" },
+      everyone: { name: "Discount", emoji: "🏷️" },
+    };
+
+    // Welcome message
+    await sendWhatsAppMessage(
+      phoneNumber,
+      "🎁 *Avail Your Discounts!* 🎁\n\nLet me check what special offers you're eligible for..."
+    );
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (eligibleCategories.length === 0) {
+      // No eligible categories
+      await sendWhatsAppMessage(
+        phoneNumber,
+        "😔 *No Special Offers Available*\n\n" +
+        "You don't currently qualify for any special discount categories.\n\n" +
+        "*How to unlock discounts:*\n" +
+        "• 👷 Become a Foreman\n" +
+        "• 🔗 Refer 3+ friends (AU numbers)\n" +
+        "• 💎 Make purchases over 30M\n" +
+        "• 🆕 New customers get welcome discounts!\n\n" +
+        "Type *3* to see general discounts, or *0* for main menu."
+      );
+      return;
+    }
+
+    // Build eligible categories message
+    let eligibleMessage = "✅ *Your Eligible Discount Categories:*\n\n";
+    let categoryIndex = 1;
+    const eligibleCatList = [];
+
+    for (const cat of eligibleCategories) {
+      const display = categoryDisplay[cat];
+      if (display) {
+        eligibleMessage += `${categoryIndex}. ${display.emoji} ${display.name}\n`;
+        eligibleCatList.push(cat);
+        categoryIndex++;
+      }
+    }
+
+    // Store eligible categories for selection
+    customer.contextData = customer.contextData || {};
+    customer.contextData.eligibleBatchCategories = eligibleCatList;
+    await customer.save();
+
+    eligibleMessage += "\n💡 *Select a category number to see products with special pricing!*\n";
+    eligibleMessage += "Or type *A* to see all your eligible products at once.\n";
+    eligibleMessage += "Type *0* to return to main menu.";
+
+    await sendWhatsAppMessage(phoneNumber, eligibleMessage);
+    await customer.updateConversationState("batch_discount_categories");
+
+  } catch (error) {
+    console.error("Error checking batch discount eligibility:", error);
+    await sendWhatsAppMessage(
+      phoneNumber,
+      "Sorry, I couldn't check your discount eligibility right now. Please try again later or type 0 for main menu."
+    );
+  }
+}
+
+// Function to show batch discount products for a specific category
+async function sendBatchDiscountProducts(phoneNumber, customer, category) {
+  try {
+    const categoryDisplay = {
+      foremen: "foremen",
+      foremen_commission: "foremen+", 
+      referral_3_days: "You referred 3",
+      new_customer_referred: "new_customer_ref",
+      new_customer: "Hey new customer",
+      shopping_30m: "VIP",
+      shopping_100m_60d: "Valued customer",
+      everyone: "Discount",
+    };
+
+    // Find all batch discounts for this category
+    const batches = await BatchDiscount.find({
+      discountCategory: category,
+      isActive: true,
+    }).populate("products");
+
+    if (!batches || batches.length === 0) {
+      await sendWhatsAppMessage(
+        phoneNumber,
+        `😔 No products are currently available in the *${categoryDisplay[category]}* category.\n\nType *0* to return to main menu.`
+      );
+      return;
+    }
+
+    // Collect all products from all batches
+    let productsMessage = `🛍️ *${categoryDisplay[category]}* Products:\n\n`;
+    const allProducts = [];
+
+    for (const batch of batches) {
+      if (batch.products && batch.products.length > 0) {
+        for (const product of batch.products) {
+          allProducts.push({
+            id: product._id,
+            name: product.productName,
+            originalPrice: batch.originalPrice || product.NormalPrice,
+            discountPrice: batch.discountPrice,
+            discountPercentage: batch.discountPercentage,
+            batchNumber: batch.batchNumber,
+          });
+        }
+      }
+    }
+
+    if (allProducts.length === 0) {
+      await sendWhatsAppMessage(
+        phoneNumber,
+        `😔 No products available in this category yet.\n\nType *0* for main menu.`
+      );
+      return;
+    }
+
+    // Store product list for selection
+    customer.contextData.batchProductList = allProducts.map(p => p.id.toString());
+    await customer.save();
+
+    allProducts.forEach((product, index) => {
+      productsMessage += `${index + 1}. ${product.name}\n`;
+      productsMessage += `   💰 Rp ${product.discountPrice.toLocaleString()} `;
+      productsMessage += `(-${product.discountPercentage}% off!)\n`;
+      productsMessage += `   Was: Rp ${product.originalPrice.toLocaleString()}\n\n`;
+    });
+
+    productsMessage += "💡 Select a product number to add to cart.\nType *0* for main menu.";
+
+    await sendWhatsAppMessage(phoneNumber, productsMessage);
+    await customer.updateConversationState("batch_discount_product_select");
+
+  } catch (error) {
+    console.error("Error fetching batch discount products:", error);
+    await sendWhatsAppMessage(
+      phoneNumber,
+      "Sorry, couldn't load products. Please try again or type 0 for main menu."
+    );
+  }
 }
 
 async function getDiscountProductsForCategory(category) {

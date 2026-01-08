@@ -368,6 +368,10 @@ app.use("/api/supplier-orders", supplierOrderRoutes);
 const productTrackingRoutes = require("./routes/productTrackingRoutes");
 app.use("/api/tracking", productTrackingRoutes);
 
+// Batch Discount Allocation routes
+const batchDiscountRoutes = require("./routes/batchDiscountRoutes");
+app.use("/api/batch-discounts", batchDiscountRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict

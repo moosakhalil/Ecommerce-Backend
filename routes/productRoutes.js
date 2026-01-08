@@ -9,6 +9,7 @@ const XLSX = require("xlsx");
 
 const Supplier = require("../models/supplier");
 const Category = require("../models/Category");
+const BatchDiscount = require("../models/BatchDiscount"); // ✅ Added for batch discount creation
 
 // ─── Excel Upload Multer Configuration ───────────────────────────────────
 const excelStorage = multer.diskStorage({
@@ -225,6 +226,9 @@ router.post("/", async (req, res) => {
       tags,
       notes: d.notes,
 
+      // ✅ Batch Discounts
+      batchDiscounts: d.batchDiscounts,
+
       // ✅ Package Size for vehicle assignment
       packageSize: d.packageSize || "Large", // Default to Large if not provided
 
@@ -248,7 +252,52 @@ router.post("/", async (req, res) => {
 
     await product.save();
 
-    // 7) Extract weight from first specification
+    // ✅ 7) Create BatchDiscount documents for each selected category
+    if (d.batchDiscounts && d.batchDiscounts.length > 0) {
+      console.log("🏷️ Creating BatchDiscount documents for product:", product.productId);
+      
+      for (const batchData of d.batchDiscounts) {
+        try {
+          // Generate batch number
+          const batchNumber = await BatchDiscount.generateBatchNumber();
+          
+          // Create BatchDiscount document
+          const batchDiscount = new BatchDiscount({
+            batchNumber,
+            discountCategory: batchData.category,
+            displayName: BatchDiscount.getCategoryInfo(batchData.category)?.displayName || batchData.category,
+            products: [{
+              productId: product._id,
+              productCode: product.productId,
+              productName: product.productName
+            }],
+            discountPrice: batchData.discountPrice,
+            discountPercentage: batchData.discountPercentage,
+            originalPrice: batchData.originalPriceAtCreation || product.NormalPrice,
+            createdBy: "Admin",
+            isActive: true
+          });
+
+          await batchDiscount.save();
+          console.log(`✅ Created BatchDiscount: ${batchNumber} for category: ${batchData.category}`);
+          
+          // Update the product's batchDiscounts with the generated batch number
+          const batchIndex = product.batchDiscounts.findIndex(
+            bd => bd.category === batchData.category
+          );
+          if (batchIndex !== -1) {
+            product.batchDiscounts[batchIndex].batchNumber = batchNumber;
+          }
+        } catch (batchErr) {
+          console.error("Error creating BatchDiscount:", batchErr);
+        }
+      }
+      
+      // Save product with updated batch numbers
+      await product.save();
+    }
+
+    // 8) Extract weight from first specification
     const out = product.toObject();
     out.weight = out.specifications?.[0]?.weight ?? null;
 
@@ -279,26 +328,31 @@ router.post("/", async (req, res) => {
 // ✅ FIXED: Main products endpoint with proper status filtering
 router.get("/", async (req, res) => {
   try {
-    const { status } = req.query; // Allow status filtering
+    const { status, search } = req.query;
 
     let query = {};
-    if (status) {
-      if (status === "needs_reorder") {
-        // For OutOfStock component - exclude products with active orders
-        query.stockOrderStatus = { $in: ["needs_reorder"] };
-      } else {
-        query.stockOrderStatus = status;
-      }
+    
+    // Handle search by name, productId, normalId, or parentProduct
+    if (search && search.trim()) {
+      const searchRegex = new RegExp(search.trim(), 'i');
+      query.$or = [
+        { productName: searchRegex },
+        { productId: searchRegex },
+        { normalId: searchRegex },
+        { parentProduct: searchRegex },
+        { brand: searchRegex },
+        { categories: searchRegex }
+      ];
     }
 
     const products = await Product.find(query)
       .select(
-        "productId productType productName normalId parentProduct categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt selectedSupplierId supplierName supplierContact supplierEmail supplierAddress"
+        "productId productType productName normalId parentProduct categories subCategories additionalCategories Stock NormalPrice lostStock lostStockHistory AmountStockmintoReorder minimumOrder useAmountStockmintoReorder stockOrderStatus orderStock createdAt updatedAt selectedSupplierId supplierName supplierContact supplierEmail supplierAddress batchDiscounts"
       )
       .lean();
 
     // Process products to ensure proper threshold calculation
-    const processedProducts = products.map((product) => {
+    let processedProducts = products.map((product) => {
       // Determine the reorder threshold for this product
       let reorderThreshold = 5; // Default fallback
 
@@ -311,6 +365,17 @@ router.get("/", async (req, res) => {
         reorderThreshold = product.minimumOrder;
       }
 
+      // Calculate stock status
+      const stock = product.Stock || 0;
+      let stockStatus;
+      if (stock === 0) {
+        stockStatus = "out_of_stock";
+      } else if (stock <= reorderThreshold) {
+        stockStatus = "low_stock";
+      } else {
+        stockStatus = "in_stock";
+      }
+
       // Add status flags
       const isOrderPlaced = product.stockOrderStatus === "order_placed";
       const isConfirmed = product.stockOrderStatus === "order_confirmed";
@@ -319,17 +384,30 @@ router.get("/", async (req, res) => {
       return {
         ...product,
         reorderThreshold,
-        currentStock: product.Stock || 0,
-        isLowStock: (product.Stock || 0) <= reorderThreshold,
-        isOutOfStock: (product.Stock || 0) === 0,
-        isCritical: (product.Stock || 0) <= Math.ceil(reorderThreshold * 0.5),
-        stockStatus: getStockStatus(product.Stock || 0, reorderThreshold),
+        currentStock: stock,
+        isLowStock: stock <= reorderThreshold && stock > 0,
+        isOutOfStock: stock === 0,
+        isCritical: stock <= Math.ceil(reorderThreshold * 0.5),
+        stockStatus,
         // Status flags
         isOrderPlaced,
         isConfirmed,
         needsReorder,
       };
     });
+
+    // Apply stock status filter AFTER processing
+    if (status && status !== "All") {
+      if (status === "In Stock") {
+        processedProducts = processedProducts.filter(p => p.stockStatus === "in_stock");
+      } else if (status === "Low Stock") {
+        processedProducts = processedProducts.filter(p => p.stockStatus === "low_stock");
+      } else if (status === "Out of Stock") {
+        processedProducts = processedProducts.filter(p => p.stockStatus === "out_of_stock");
+      } else if (status === "needs_reorder") {
+        processedProducts = processedProducts.filter(p => p.needsReorder);
+      }
+    }
 
     res.json({
       success: true,

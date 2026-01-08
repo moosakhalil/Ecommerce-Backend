@@ -304,6 +304,29 @@ const productSchema = new Schema(
     currentDiscountPrice: { type: Number },
     discountValidUntil: { type: Date },
 
+    // ✅ NEW: Batch Discount Allocation
+    batchDiscounts: [{
+      category: {
+        type: String,
+        enum: [
+          'foremen',
+          'foremen_commission',
+          'referral_3_days',
+          'new_customer_referred',
+          'new_customer',
+          'shopping_30m',
+          'shopping_100m_60d',
+          'everyone'
+        ]
+      },
+      batchNumber: String,
+      discountPrice: Number,
+      discountPercentage: Number,
+      originalPriceAtCreation: Number,
+      addedAt: { type: Date, default: Date.now },
+      isActive: { type: Boolean, default: true }
+    }],
+
     // ✅ NEW: Vehicle Assignment Fields
     packageSize: {
       type: String,
