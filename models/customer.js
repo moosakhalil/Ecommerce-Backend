@@ -1340,7 +1340,7 @@ const customerSchema = new mongoose.Schema(
         },
         status: {
           type: String,
-          enum: ["unverified", "verified", "manager", "spam"],
+          enum: ["unverified", "verified", "manager", "not_passed"],
           default: "unverified",
         },
         statusUpdatedAt: {
@@ -1351,7 +1351,7 @@ const customerSchema = new mongoose.Schema(
           {
             status: {
               type: String,
-              enum: ["unverified", "verified", "manager", "spam"],
+              enum: ["unverified", "verified", "manager", "not_passed"],
             },
             updatedAt: {
               type: Date,

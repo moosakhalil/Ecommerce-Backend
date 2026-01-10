@@ -118,7 +118,7 @@ router.post("/update-status", async (req, res) => {
     }
 
     // Validate status
-    const validStatuses = ["unverified", "verified", "manager", "spam"];
+    const validStatuses = ["unverified", "verified", "manager", "not_passed"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -126,9 +126,9 @@ router.post("/update-status", async (req, res) => {
       });
     }
 
-    // Validate rejection reason if status is spam (video not passed)
+    // Validate rejection reason if status is not_passed (video not passed)
     const validRejectionReasons = ["vulgar", "error", "spam", "not_good_enough", "other"];
-    if (status === "spam" && rejectionReason && !validRejectionReasons.includes(rejectionReason)) {
+    if (status === "not_passed" && rejectionReason && !validRejectionReasons.includes(rejectionReason)) {
       return res.status(400).json({
         success: false,
         message: `Invalid rejection reason. Must be one of: ${validRejectionReasons.join(", ")}`,
@@ -165,8 +165,8 @@ router.post("/update-status", async (req, res) => {
     customer.referralvideos[videoIndex].status = status;
     customer.referralvideos[videoIndex].statusUpdatedAt = new Date();
 
-    // Store rejection reason and note if status is spam (video not passed)
-    if (status === "spam") {
+    // Store rejection reason and note if status is not_passed (video not passed)
+    if (status === "not_passed") {
       customer.referralvideos[videoIndex].rejectionReason = rejectionReason || null;
       customer.referralvideos[videoIndex].rejectionNote = note || null;
     }
@@ -180,7 +180,7 @@ router.post("/update-status", async (req, res) => {
       status: status,
       updatedAt: new Date(),
       updatedBy: "admin", // You can add actual admin user info here
-      ...(status === "spam" && { rejectionReason: rejectionReason || null, note: note || null }),
+      ...(status === "not_passed" && { rejectionReason: rejectionReason || null, note: note || null }),
     });
 
     await customer.save();
@@ -218,7 +218,7 @@ router.post("/bulk-update-status", async (req, res) => {
       });
     }
 
-    const validStatuses = ["unverified", "verified", "manager", "spam"];
+    const validStatuses = ["unverified", "verified", "manager", "not_passed"];
     const results = [];
     const errors = [];
 
@@ -384,7 +384,7 @@ router.get("/stats", async (req, res) => {
       unverified: { count: 0, totalShared: 0, totalSize: 0 },
       verified: { count: 0, totalShared: 0, totalSize: 0 },
       manager: { count: 0, totalShared: 0, totalSize: 0 },
-      spam: { count: 0, totalShared: 0, totalSize: 0 },
+      not_passed: { count: 0, totalShared: 0, totalSize: 0 },
     };
 
     stats.forEach((stat) => {

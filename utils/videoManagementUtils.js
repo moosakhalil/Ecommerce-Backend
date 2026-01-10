@@ -25,7 +25,7 @@ class VideoManagementUtils {
         unverified: { count: 0, totalShared: 0 },
         verified: { count: 0, totalShared: 0 },
         manager: { count: 0, totalShared: 0 },
-        spam: { count: 0, totalShared: 0 },
+        not_passed: { count: 0, totalShared: 0 },
       };
 
       stats.forEach((stat) => {
