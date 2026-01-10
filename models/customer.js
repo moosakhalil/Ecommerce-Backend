@@ -2900,6 +2900,20 @@ module.exports = {
   },
 };
 
+// Performance indexes for referral data queries
+customerSchema.index({ createdAt: -1 });
+customerSchema.index({ "referredBy.referralCode": 1 });
+customerSchema.index({ "referredBy.dateReferred": -1 });
+customerSchema.index({ referralCode: 1 });
+customerSchema.index({ repliedWithHi: 1 });
+customerSchema.index({ lastInteraction: -1 });
+customerSchema.index({ "orderHistory.0": 1 }); // Check if has any orders
+customerSchema.index({ "referralvideos.0": 1 }); // Check if has any videos
+customerSchema.index({ "referralvideos.approvalDate": -1 });
+// Compound index for common referral queries
+customerSchema.index({ "referredBy.referralCode": 1, "orderHistory.0": 1 });
+customerSchema.index({ "referredBy.referralCode": 1, repliedWithHi: 1 });
+
 const Customer = mongoose.model("Customer", customerSchema);
 
 module.exports = Customer;

@@ -145,80 +145,70 @@ router.get("/", async (req, res) => {
       recentActivity: [],
     };
 
-    // Process customers for all types
-    const customerTypes = [
-      "referred_potential",
-      "referred_existing",
-      "all_potential",
-      "all_existing",
-    ];
+    // OPTIMIZED: Only process the requested customer type instead of all types
+    const type = customerType;
+    const baseTypeFilter = getCustomerTypeFilter(type);
 
-    for (const type of customerTypes) {
-      const baseTypeFilter = getCustomerTypeFilter(type);
-
-      // Apply additional filter for "all_" types
-      let typeFilter = baseTypeFilter;
-      if (type.startsWith("all_") && filter !== "all") {
-        if (filter === "referred_only") {
-          typeFilter = {
-            ...baseTypeFilter,
-            "referredBy.referralCode": { $exists: true },
-          };
-        } else if (filter === "non_referred_only") {
-          typeFilter = {
-            ...baseTypeFilter,
-            "referredBy.referralCode": { $exists: false },
-          };
-        }
-      }
-
-      const customers = await Customer.find(typeFilter);
-
-      // Calculate stats for all time periods
-      const periods = ["today", "week", "month", "last3months", "all"];
-
-      for (const periodKey of periods) {
-        const dateFilter = getDateFilter(periodKey);
-
-        // Count new accounts for this period
-        let newAccountsQuery = typeFilter;
-        if (Object.keys(dateFilter).length > 0) {
-          newAccountsQuery = { ...typeFilter, createdAt: dateFilter };
-        }
-
-        const newAccounts = await Customer.countDocuments(newAccountsQuery);
-        result[type].stats[periodKey].newAccounts = newAccounts;
-
-        // Count customers who replied with "hi"
-        let repliedWithHiQuery = {
-          ...typeFilter,
-          $or: [
-            { repliedWithHi: true },
-            { "messageHistory.content": { $regex: /^hi$/i } },
-          ],
+    // Apply additional filter for "all_" types
+    let typeFilter = baseTypeFilter;
+    if (type.startsWith("all_") && filter !== "all") {
+      if (filter === "referred_only") {
+        typeFilter = {
+          ...baseTypeFilter,
+          "referredBy.referralCode": { $exists: true },
         };
-        if (Object.keys(dateFilter).length > 0) {
-          repliedWithHiQuery = { ...repliedWithHiQuery, createdAt: dateFilter };
-        }
-
-        const repliedWithHi = await Customer.countDocuments(repliedWithHiQuery);
-        result[type].stats[periodKey].repliedWithHi = repliedWithHi;
-
-        // Count successful referrals (people who were referred and then made orders)
-        let successfulReferralsQuery = {
-          "referredBy.dateReferred":
-            Object.keys(dateFilter).length > 0 ? dateFilter : { $exists: true },
-          "orderHistory.0": { $exists: true }, // They must have made at least one order
+      } else if (filter === "non_referred_only") {
+        typeFilter = {
+          ...baseTypeFilter,
+          "referredBy.referralCode": { $exists: false },
         };
-
-        const successfulReferrals = await Customer.countDocuments(
-          successfulReferralsQuery
-        );
-        result[type].stats[periodKey].successfulReferrals = successfulReferrals;
       }
+    }
 
+    // Limit customers returned to improve performance
+    const customers = await Customer.find(typeFilter).limit(500).lean();
+
+    // OPTIMIZED: Only calculate stats for the requested period instead of all periods
+    const dateFilter = getDateFilter(period);
+
+    // Build queries for parallel execution
+    let newAccountsQuery = typeFilter;
+    if (Object.keys(dateFilter).length > 0) {
+      newAccountsQuery = { ...typeFilter, createdAt: dateFilter };
+    }
+
+    let repliedWithHiQuery = {
+      ...typeFilter,
+      $or: [
+        { repliedWithHi: true },
+        { "messageHistory.content": { $regex: /^hi$/i } },
+      ],
+    };
+    if (Object.keys(dateFilter).length > 0) {
+      repliedWithHiQuery = { ...repliedWithHiQuery, createdAt: dateFilter };
+    }
+
+    let successfulReferralsQuery = {
+      "referredBy.dateReferred":
+        Object.keys(dateFilter).length > 0 ? dateFilter : { $exists: true },
+      "orderHistory.0": { $exists: true },
+    };
+
+    // Run all count queries in parallel
+    const [newAccounts, repliedWithHi, successfulReferrals] = await Promise.all([
+      Customer.countDocuments(newAccountsQuery),
+      Customer.countDocuments(repliedWithHiQuery),
+      Customer.countDocuments(successfulReferralsQuery)
+    ]);
+
+    result[type].stats[period].newAccounts = newAccounts;
+    result[type].stats[period].repliedWithHi = repliedWithHi;
+    result[type].stats[period].successfulReferrals = successfulReferrals;
+
+    // OPTIMIZED: Run both aggregate queries in parallel
+    const [topReferring, topReferred] = await Promise.all([
       // Get top referring people (those who have made the most referrals)
-      const topReferring = await Customer.aggregate([
+      Customer.aggregate([
         { $match: typeFilter },
         {
           $lookup: {
@@ -265,10 +255,9 @@ router.get("/", async (req, res) => {
             createdAt: 1,
           },
         },
-      ]);
-
+      ]),
       // Get top referred people (those who have been referred multiple times)
-      const topReferred = await Customer.aggregate([
+      Customer.aggregate([
         {
           $match: {
             ...typeFilter,
@@ -302,195 +291,190 @@ router.get("/", async (req, res) => {
             _id: 0,
           },
         },
-      ]);
+      ])
+    ]);
 
-      // Process customer details
-      const customerData = customers.map((customer) => {
-        const videosUploaded = customer.referralvideos
-          ? customer.referralvideos.length
-          : 0;
+    // Process customer details
+    const customerData = customers.map((customer) => {
+      const videosUploaded = customer.referralvideos
+        ? customer.referralvideos.length
+        : 0;
 
-        // Count people referred by this customer
-        const peopleReferred = customers.filter(
-          (c) =>
-            c.referredBy && c.referredBy.referralCode === customer.referralCode
-        ).length;
+      // Count people referred by this customer
+      const peopleReferred = customers.filter(
+        (c) =>
+          c.referredBy && c.referredBy.referralCode === customer.referralCode
+      ).length;
 
-        // Check if customer was referred
-        const isReferred = !!(
-          customer.referredBy && customer.referredBy.referralCode
+      // Check if customer was referred
+      const isReferred = !!(
+        customer.referredBy && customer.referredBy.referralCode
+      );
+
+      // Check if replied with hi
+      const repliedWithHiFlag =
+        customer.repliedWithHi ||
+        (customer.messageHistory &&
+          customer.messageHistory.some(
+            (msg) => msg.content && msg.content.toLowerCase().trim() === "hi"
+          ));
+
+      // For existing customers, calculate order stats
+      let totalOrders = 0;
+      let totalSpent = 0;
+      if (type.includes("existing") && customer.orderHistory) {
+        totalOrders = customer.orderHistory.length;
+        totalSpent = customer.orderHistory.reduce(
+          (sum, order) => sum + (order.totalAmount || 0),
+          0
         );
+      }
 
-        // Check if replied with hi
-        const repliedWithHi =
-          customer.repliedWithHi ||
-          (customer.messageHistory &&
-            customer.messageHistory.some(
-              (msg) => msg.content && msg.content.toLowerCase().trim() === "hi"
-            ));
+      return {
+        _id: customer._id,
+        name: customer.name,
+        phoneNumber: customer.phoneNumber[0] || "",
+        referralCode: customer.referralCode,
+        videosUploaded,
+        peopleReferred,
+        isReferred,
+        repliedWithHi: repliedWithHiFlag,
+        totalOrders,
+        totalSpent,
+        joinDate: customer.createdAt,
+        lastActivity: customer.lastInteraction,
+        referredBy: customer.referredBy,
+      };
+    });
 
-        // For existing customers, calculate order stats
-        let totalOrders = 0;
-        let totalSpent = 0;
-        if (type.includes("existing") && customer.orderHistory) {
-          totalOrders = customer.orderHistory.length;
-          totalSpent = customer.orderHistory.reduce(
-            (sum, order) => sum + (order.totalAmount || 0),
-            0
-          );
-        }
+    // Sort customers by activity level
+    customerData.sort((a, b) => {
+      const aActivity =
+        a.videosUploaded + a.peopleReferred + (a.totalOrders || 0);
+      const bActivity =
+        b.videosUploaded + b.peopleReferred + (b.totalOrders || 0);
+      return bActivity - aActivity;
+    });
 
-        return {
-          _id: customer._id,
-          name: customer.name,
-          phoneNumber: customer.phoneNumber[0] || "",
-          referralCode: customer.referralCode,
-          videosUploaded,
-          peopleReferred,
-          isReferred,
-          repliedWithHi,
-          totalOrders,
-          totalSpent,
-          joinDate: customer.createdAt,
-          lastActivity: customer.lastInteraction,
-          referredBy: customer.referredBy,
-        };
-      });
+    result[type].topReferring = topReferring;
+    result[type].topReferred = topReferred;
+    result[type].customers = customerData;
 
-      // Sort customers by activity level
-      customerData.sort((a, b) => {
-        const aActivity =
-          a.videosUploaded + a.peopleReferred + (a.totalOrders || 0);
-        const bActivity =
-          b.videosUploaded + b.peopleReferred + (b.totalOrders || 0);
-        return bActivity - aActivity;
-      });
-
-      result[type].topReferring = topReferring;
-      result[type].topReferred = topReferred;
-      result[type].customers = customerData;
-    }
-
-    // Get recent activity for all customers
-    const recentActivity = [];
-
-    // Get recent video uploads
-    const recentVideos = await Customer.aggregate([
-      { $match: { "referralvideos.0": { $exists: true } } },
-      { $unwind: "$referralvideos" },
-      { $sort: { "referralvideos.approvalDate": -1 } },
-      { $limit: 10 },
-      {
-        $project: {
-          customerName: "$name",
-          action: {
-            $concat: ["Uploaded referral video ", "$referralvideos.imageId"],
+    // OPTIMIZED: Run all recent activity queries in parallel
+    const [recentVideos, recentReferrals, recentOrders, recentShares, recentHiReplies] = await Promise.all([
+      // Get recent video uploads
+      Customer.aggregate([
+        { $match: { "referralvideos.0": { $exists: true } } },
+        { $unwind: "$referralvideos" },
+        { $sort: { "referralvideos.approvalDate": -1 } },
+        { $limit: 10 },
+        {
+          $project: {
+            customerName: "$name",
+            action: {
+              $concat: ["Uploaded referral video ", "$referralvideos.imageId"],
+            },
+            timestamp: "$referralvideos.approvalDate",
+            type: { $literal: "video" },
           },
-          timestamp: "$referralvideos.approvalDate",
-          type: { $literal: "video" },
         },
-      },
-    ]);
-
-    recentActivity.push(...recentVideos);
-
-    // Get recent referrals
-    const recentReferrals = await Customer.aggregate([
-      { $match: { "referredBy.dateReferred": { $exists: true } } },
-      { $sort: { "referredBy.dateReferred": -1 } },
-      { $limit: 10 },
-      {
-        $lookup: {
-          from: "customers",
-          localField: "referredBy.referralCode",
-          foreignField: "referralCode",
-          as: "referrer",
-        },
-      },
-      {
-        $project: {
-          customerName: { $arrayElemAt: ["$referrer.name", 0] },
-          action: {
-            $concat: ["Referred ", "$name"],
+      ]),
+      // Get recent referrals
+      Customer.aggregate([
+        { $match: { "referredBy.dateReferred": { $exists: true } } },
+        { $sort: { "referredBy.dateReferred": -1 } },
+        { $limit: 10 },
+        {
+          $lookup: {
+            from: "customers",
+            localField: "referredBy.referralCode",
+            foreignField: "referralCode",
+            as: "referrer",
           },
-          timestamp: "$referredBy.dateReferred",
-          type: { $literal: "referral" },
         },
-      },
-    ]);
-
-    recentActivity.push(...recentReferrals);
-
-    // Get recent orders
-    const recentOrders = await Customer.aggregate([
-      { $match: { "orderHistory.0": { $exists: true } } },
-      { $unwind: "$orderHistory" },
-      { $sort: { "orderHistory.orderDate": -1 } },
-      { $limit: 10 },
-      {
-        $project: {
-          customerName: "$name",
-          action: {
-            $concat: [
-              "Placed order ",
-              "$orderHistory.orderId",
-              " ($",
-              { $toString: "$orderHistory.totalAmount" },
-              ")",
+        {
+          $project: {
+            customerName: { $arrayElemAt: ["$referrer.name", 0] },
+            action: {
+              $concat: ["Referred ", "$name"],
+            },
+            timestamp: "$referredBy.dateReferred",
+            type: { $literal: "referral" },
+          },
+        },
+      ]),
+      // Get recent orders
+      Customer.aggregate([
+        { $match: { "orderHistory.0": { $exists: true } } },
+        { $unwind: "$orderHistory" },
+        { $sort: { "orderHistory.orderDate": -1 } },
+        { $limit: 10 },
+        {
+          $project: {
+            customerName: "$name",
+            action: {
+              $concat: [
+                "Placed order ",
+                "$orderHistory.orderId",
+                " ($",
+                { $toString: "$orderHistory.totalAmount" },
+                ")",
+              ],
+            },
+            timestamp: "$orderHistory.orderDate",
+            type: { $literal: "order" },
+          },
+        },
+      ]),
+      // Get recent video shares
+      Customer.aggregate([
+        { $match: { "referralvideos.sharedWith.0": { $exists: true } } },
+        { $unwind: "$referralvideos" },
+        { $unwind: "$referralvideos.sharedWith" },
+        { $sort: { "referralvideos.sharedWith.dateShared": -1 } },
+        { $limit: 10 },
+        {
+          $project: {
+            customerName: "$name",
+            action: {
+              $concat: ["Shared video with ", "$referralvideos.sharedWith.name"],
+            },
+            timestamp: "$referralvideos.sharedWith.dateShared",
+            type: { $literal: "share" },
+          },
+        },
+      ]),
+      // Get recent "hi" replies
+      Customer.aggregate([
+        {
+          $match: {
+            $or: [
+              { repliedWithHi: true },
+              { "messageHistory.content": { $regex: /^hi$/i } },
             ],
           },
-          timestamp: "$orderHistory.orderDate",
-          type: { $literal: "order" },
         },
-      },
-    ]);
-
-    recentActivity.push(...recentOrders);
-
-    // Get recent video shares
-    const recentShares = await Customer.aggregate([
-      { $match: { "referralvideos.sharedWith.0": { $exists: true } } },
-      { $unwind: "$referralvideos" },
-      { $unwind: "$referralvideos.sharedWith" },
-      { $sort: { "referralvideos.sharedWith.dateShared": -1 } },
-      { $limit: 10 },
-      {
-        $project: {
-          customerName: "$name",
-          action: {
-            $concat: ["Shared video with ", "$referralvideos.sharedWith.name"],
+        { $sort: { lastInteraction: -1 } },
+        { $limit: 10 },
+        {
+          $project: {
+            customerName: "$name",
+            action: "Replied with 'Hi'",
+            timestamp: "$lastInteraction",
+            type: { $literal: "reply" },
           },
-          timestamp: "$referralvideos.sharedWith.dateShared",
-          type: { $literal: "share" },
         },
-      },
+      ])
     ]);
 
-    recentActivity.push(...recentShares);
-
-    // Get recent "hi" replies
-    const recentHiReplies = await Customer.aggregate([
-      {
-        $match: {
-          $or: [
-            { repliedWithHi: true },
-            { "messageHistory.content": { $regex: /^hi$/i } },
-          ],
-        },
-      },
-      { $sort: { lastInteraction: -1 } },
-      { $limit: 10 },
-      {
-        $project: {
-          customerName: "$name",
-          action: "Replied with 'Hi'",
-          timestamp: "$lastInteraction",
-          type: { $literal: "reply" },
-        },
-      },
-    ]);
-
-    recentActivity.push(...recentHiReplies);
+    // Combine all recent activity
+    const recentActivity = [
+      ...recentVideos,
+      ...recentReferrals,
+      ...recentOrders,
+      ...recentShares,
+      ...recentHiReplies
+    ];
 
     // Sort all recent activity by timestamp
     recentActivity.sort(
@@ -1267,6 +1251,337 @@ router.get("/export", async (req, res) => {
       success: false,
       message: "Error exporting referral data",
       error: error.message,
+    });
+  }
+});
+
+// GET /api/referral-data/averages - Get referral averages and metrics for charts
+router.get("/averages", async (req, res) => {
+  try {
+    const { period = "all" } = req.query;
+
+    console.log(`Fetching referral averages for period: ${period}`);
+
+    // Calculate date ranges
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - 7);
+    const monthStart = new Date(today);
+    monthStart.setMonth(today.getMonth() - 1);
+    const last3MonthsStart = new Date(today);
+    last3MonthsStart.setMonth(today.getMonth() - 3);
+
+    // Get date filter based on period
+    const getDateFilter = (period) => {
+      switch (period) {
+        case "today":
+          return { $gte: today };
+        case "week":
+          return { $gte: weekStart };
+        case "month":
+          return { $gte: monthStart };
+        case "last3months":
+          return { $gte: last3MonthsStart };
+        default:
+          return {}; // all time
+      }
+    };
+
+    const dateFilter = getDateFilter(period);
+    const createdAtFilter = Object.keys(dateFilter).length > 0 ? { createdAt: dateFilter } : {};
+
+    // Get all customers for calculations
+    const allCustomers = await Customer.find(createdAtFilter);
+    
+    // Get referred customers who made purchases
+    const referredWithOrders = await Customer.find({
+      ...createdAtFilter,
+      "referredBy.referralCode": { $exists: true, $ne: null },
+      "orderHistory.0": { $exists: true }
+    });
+
+    // Get referred customers who replied with Hi
+    const referredWithHi = await Customer.find({
+      ...createdAtFilter,
+      "referredBy.referralCode": { $exists: true, $ne: null },
+      $or: [
+        { repliedWithHi: true },
+        { "chatHistory.message": { $regex: /^hi$/i } }
+      ]
+    });
+
+    // Get all referred customers
+    const allReferred = await Customer.find({
+      ...createdAtFilter,
+      "referredBy.referralCode": { $exists: true, $ne: null }
+    });
+
+    // Get customers with videos
+    const customersWithVideos = await Customer.find({
+      ...createdAtFilter,
+      "referralvideos.0": { $exists: true }
+    });
+
+    // Calculate averages
+    let avgReferralsBeforeHi = 0;
+    let avgReferralsBeforePurchase = 0;
+    let avgDaysToFirstPurchase = 0;
+    let avgHoursToHiResponse = 0;
+    let avgVideoSharesPerCustomer = 0;
+    let avgVideosPerCustomer = 0;
+
+    // Calculate total video shares
+    let totalShares = 0;
+    let totalVideos = 0;
+    customersWithVideos.forEach(customer => {
+      if (customer.referralvideos) {
+        totalVideos += customer.referralvideos.length;
+        customer.referralvideos.forEach(video => {
+          if (video.sharedWith) {
+            totalShares += video.sharedWith.length;
+          }
+        });
+      }
+    });
+
+    if (customersWithVideos.length > 0) {
+      avgVideoSharesPerCustomer = Math.round((totalShares / customersWithVideos.length) * 10) / 10;
+      avgVideosPerCustomer = Math.round((totalVideos / customersWithVideos.length) * 10) / 10;
+    }
+
+    // Calculate average days to first purchase
+    let totalDaysToPurchase = 0;
+    let purchaseCount = 0;
+    referredWithOrders.forEach(customer => {
+      if (customer.createdAt && customer.orderHistory && customer.orderHistory.length > 0) {
+        // Find the earliest order
+        const orders = customer.orderHistory.filter(o => o.orderId);
+        if (orders.length > 0) {
+          const createdDate = new Date(customer.createdAt);
+          const now = new Date();
+          const daysDiff = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
+          totalDaysToPurchase += daysDiff;
+          purchaseCount++;
+        }
+      }
+    });
+
+    if (purchaseCount > 0) {
+      avgDaysToFirstPurchase = Math.round((totalDaysToPurchase / purchaseCount) * 10) / 10;
+    }
+
+    // Calculate average hours to Hi response (estimate based on createdAt to lastInteraction)
+    let totalHoursToHi = 0;
+    let hiCount = 0;
+    referredWithHi.forEach(customer => {
+      if (customer.createdAt && customer.lastInteraction) {
+        const createdDate = new Date(customer.createdAt);
+        const interactionDate = new Date(customer.lastInteraction);
+        const hoursDiff = Math.floor((interactionDate - createdDate) / (1000 * 60 * 60));
+        if (hoursDiff >= 0 && hoursDiff < 720) { // Within 30 days
+          totalHoursToHi += hoursDiff;
+          hiCount++;
+        }
+      }
+    });
+
+    if (hiCount > 0) {
+      avgHoursToHiResponse = Math.round((totalHoursToHi / hiCount) * 10) / 10;
+    }
+
+    // Calculate referrals needed before actions
+    // Count how many referrals each referrer made before their referred customers said hi or bought
+    const referrers = await Customer.aggregate([
+      { $match: { referralCode: { $exists: true, $ne: null } } },
+      {
+        $lookup: {
+          from: "customers",
+          let: { refCode: "$referralCode" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$referredBy.referralCode", "$$refCode"] } } }
+          ],
+          as: "referrals"
+        }
+      },
+      {
+        $addFields: {
+          totalReferrals: { $size: "$referrals" },
+          referralsWithHi: {
+            $size: {
+              $filter: {
+                input: "$referrals",
+                as: "ref",
+                cond: { $eq: ["$$ref.repliedWithHi", true] }
+              }
+            }
+          },
+          referralsWithOrders: {
+            $size: {
+              $filter: {
+                input: "$referrals",
+                as: "ref",
+                cond: { $gt: [{ $size: { $ifNull: ["$$ref.orderHistory", []] } }, 0] }
+              }
+            }
+          }
+        }
+      },
+      { $match: { totalReferrals: { $gt: 0 } } }
+    ]);
+
+    let totalReferralsBeforeHi = 0;
+    let hiReferrersCount = 0;
+    let totalReferralsBeforePurchase = 0;
+    let purchaseReferrersCount = 0;
+
+    referrers.forEach(referrer => {
+      if (referrer.referralsWithHi > 0) {
+        avgReferralsBeforeHi = referrer.totalReferrals / referrer.referralsWithHi;
+        totalReferralsBeforeHi += avgReferralsBeforeHi;
+        hiReferrersCount++;
+      }
+      if (referrer.referralsWithOrders > 0) {
+        avgReferralsBeforePurchase = referrer.totalReferrals / referrer.referralsWithOrders;
+        totalReferralsBeforePurchase += avgReferralsBeforePurchase;
+        purchaseReferrersCount++;
+      }
+    });
+
+    if (hiReferrersCount > 0) {
+      avgReferralsBeforeHi = Math.round((totalReferralsBeforeHi / hiReferrersCount) * 10) / 10;
+    }
+    if (purchaseReferrersCount > 0) {
+      avgReferralsBeforePurchase = Math.round((totalReferralsBeforePurchase / purchaseReferrersCount) * 10) / 10;
+    }
+
+    // Calculate conversion rates
+    const totalReferredCustomers = allReferred.length;
+    const referredWhoRepliedHi = referredWithHi.length;
+    const referredWhoPurchased = referredWithOrders.length;
+
+    const hiConversionRate = totalReferredCustomers > 0 
+      ? Math.round((referredWhoRepliedHi / totalReferredCustomers) * 1000) / 10 
+      : 0;
+    
+    const purchaseConversionRate = totalReferredCustomers > 0 
+      ? Math.round((referredWhoPurchased / totalReferredCustomers) * 1000) / 10 
+      : 0;
+
+    const hiToPurchaseRate = referredWhoRepliedHi > 0
+      ? Math.round((referredWhoPurchased / referredWhoRepliedHi) * 1000) / 10
+      : 0;
+
+    // Get chart data - trends over time (OPTIMIZED - reduced periods and parallel queries)
+    const chartData = {
+      referralsOverTime: [],
+      conversionsOverTime: [],
+      videosOverTime: []
+    };
+
+    // Reduce to max 7 periods for faster loading
+    const periods = period === "today" ? 6 : 7;
+
+    // Build date ranges first
+    const dateRanges = [];
+    for (let i = periods - 1; i >= 0; i--) {
+      let startDate, endDate, label;
+      
+      if (period === "today") {
+        startDate = new Date(today);
+        startDate.setHours(today.getHours() - i * 4, 0, 0, 0); // 4-hour intervals
+        endDate = new Date(startDate);
+        endDate.setHours(startDate.getHours() + 4);
+        label = `${startDate.getHours()}:00`;
+      } else if (period === "week") {
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - i);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 1);
+        label = startDate.toLocaleDateString('en-US', { weekday: 'short' });
+      } else if (period === "month") {
+        // Weekly intervals for monthly view
+        startDate = new Date(today);
+        startDate.setDate(today.getDate() - i * 4); // ~4 day intervals
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 4);
+        label = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      } else {
+        // Monthly intervals for all-time
+        startDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+        label = startDate.toLocaleDateString('en-US', { month: 'short' });
+      }
+      dateRanges.push({ startDate, endDate, label });
+    }
+
+    // Run all chart queries in parallel
+    const chartPromises = dateRanges.map(async ({ startDate, endDate, label }) => {
+      const [referralsInPeriod, conversionsInPeriod, videosInPeriod] = await Promise.all([
+        Customer.countDocuments({
+          "referredBy.dateReferred": { $gte: startDate, $lt: endDate }
+        }),
+        Customer.countDocuments({
+          "referredBy.referralCode": { $exists: true },
+          "orderHistory.0": { $exists: true },
+          createdAt: { $gte: startDate, $lt: endDate }
+        }),
+        Customer.countDocuments({
+          "referralvideos.approvalDate": { $gte: startDate, $lt: endDate }
+        })
+      ]);
+      return { label, referrals: referralsInPeriod, conversions: conversionsInPeriod, videos: videosInPeriod };
+    });
+
+    const chartResults = await Promise.all(chartPromises);
+    chartResults.forEach(result => {
+      chartData.referralsOverTime.push({ label: result.label, value: result.referrals });
+      chartData.conversionsOverTime.push({ label: result.label, value: result.conversions });
+      chartData.videosOverTime.push({ label: result.label, value: result.videos });
+    });
+
+    res.json({
+      success: true,
+      data: {
+        // Core averages
+        avgReferralsBeforeHi,
+        avgReferralsBeforePurchase,
+        avgDaysToFirstPurchase,
+        avgHoursToHiResponse,
+        avgVideoSharesPerCustomer,
+        avgVideosPerCustomer,
+        
+        // Conversion rates
+        hiConversionRate,
+        purchaseConversionRate,
+        hiToPurchaseRate,
+        
+        // Totals for context
+        totalReferredCustomers,
+        referredWhoRepliedHi,
+        referredWhoPurchased,
+        totalCustomersWithVideos: customersWithVideos.length,
+        totalVideosUploaded: totalVideos,
+        totalVideoShares: totalShares,
+        
+        // Chart data for visualizations
+        chartData,
+        
+        // Sample size info
+        sampleSize: allCustomers.length,
+        period
+      },
+      timestamp: new Date()
+    });
+
+  } catch (error) {
+    console.error("Error fetching referral averages:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching referral averages",
+      error: error.message
     });
   }
 });
