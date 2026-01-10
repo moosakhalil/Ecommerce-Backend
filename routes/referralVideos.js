@@ -107,7 +107,7 @@ router.get("/", async (req, res) => {
 // POST /api/referral-videos/update-status - Update video status
 router.post("/update-status", async (req, res) => {
   try {
-    const { customerId, videoId, status } = req.body;
+    const { customerId, videoId, status, rejectionReason, note } = req.body;
 
     // Validate required fields
     if (!customerId || !videoId || !status) {
@@ -123,6 +123,15 @@ router.post("/update-status", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+      });
+    }
+
+    // Validate rejection reason if status is spam (video not passed)
+    const validRejectionReasons = ["vulgar", "error", "spam", "not_good_enough", "other"];
+    if (status === "spam" && rejectionReason && !validRejectionReasons.includes(rejectionReason)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid rejection reason. Must be one of: ${validRejectionReasons.join(", ")}`,
       });
     }
 
@@ -156,6 +165,12 @@ router.post("/update-status", async (req, res) => {
     customer.referralvideos[videoIndex].status = status;
     customer.referralvideos[videoIndex].statusUpdatedAt = new Date();
 
+    // Store rejection reason and note if status is spam (video not passed)
+    if (status === "spam") {
+      customer.referralvideos[videoIndex].rejectionReason = rejectionReason || null;
+      customer.referralvideos[videoIndex].rejectionNote = note || null;
+    }
+
     // Add admin log if needed
     if (!customer.referralvideos[videoIndex].statusHistory) {
       customer.referralvideos[videoIndex].statusHistory = [];
@@ -165,6 +180,7 @@ router.post("/update-status", async (req, res) => {
       status: status,
       updatedAt: new Date(),
       updatedBy: "admin", // You can add actual admin user info here
+      ...(status === "spam" && { rejectionReason: rejectionReason || null, note: note || null }),
     });
 
     await customer.save();
