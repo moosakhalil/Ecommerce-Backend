@@ -1700,6 +1700,58 @@ const customerSchema = new mongoose.Schema(
       },
     ],
 
+    // ============= TRIGGER SYSTEM FIELDS =============
+    triggerHistory: [
+      {
+        triggerId: String,
+        triggerName: String,
+        triggerType: String,
+        executedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        messageContent: String,
+        messageSent: {
+          type: Boolean,
+          default: false,
+        },
+        messageDelivered: {
+          type: Boolean,
+          default: false,
+        },
+        customerResponse: String,
+        responseDate: Date,
+      },
+    ],
+
+    triggerPreferences: {
+      referralMessagesEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      marketingMessagesEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      reminderMessagesEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      globalMessagingEnabled: {
+        type: Boolean,
+        default: true,
+      },
+    },
+
+    lastReferralMessageSent: Date,
+    lastInactivityMessageSent: Date,
+    lastMarketingMessageSent: Date,
+
+    hasCompletedFirstPurchase: {
+      type: Boolean,
+      default: false,
+    },
+
     discountCodes: [
       {
         code: String,

@@ -327,6 +327,8 @@ app.use("/api/orders", ordersRouter);
 app.use("/api/customers", customersRouter);
 app.use("/api/referral-videos", referralVideosRoutes);
 app.use("/api/referral-data", referralDataRoutes);
+const triggerManagementRoutes = require("./routes/triggerManagement");
+app.use("/api/triggers", triggerManagementRoutes);
 app.use("/api/foreman-customers", foremanCustomersRoutes);
 app.use("/api/referral-demos", referralDemoRoutes);
 app.use("/api/customer-videos", referralDemoRoutes);
