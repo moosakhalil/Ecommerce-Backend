@@ -954,6 +954,125 @@ router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
         const onceShare = parseBoolean(getColumnValue(row, "onceShare"));
         const noChildHideParent = parseBoolean(getColumnValue(row, "noChildHideParent"));
 
+        // ✅ Generate Normal ID for Child products
+        let normalId = null;
+        if (productType === "Child") {
+          try {
+            const lastNormalProduct = await Product.findOne({
+              productId: { $regex: /^N/ }
+            }).sort({ productId: -1 }).lean();
+            
+            const lastChildWithNormalId = await Product.findOne({
+              normalId: { $exists: true, $ne: null }
+            }).sort({ normalId: -1 }).lean();
+            
+            let maxNum = 0;
+            
+            if (lastNormalProduct && lastNormalProduct.productId) {
+              const normalNum = parseInt(lastNormalProduct.productId.slice(1)) || 0;
+              maxNum = Math.max(maxNum, normalNum);
+            }
+            
+            if (lastChildWithNormalId && lastChildWithNormalId.normalId) {
+              const childNormalNum = parseInt(lastChildWithNormalId.normalId.slice(1)) || 0;
+              maxNum = Math.max(maxNum, childNormalNum);
+            }
+            
+            normalId = `N${String(maxNum + 1).padStart(4, '0')}`;
+            console.log(`✅ Generated Normal ID for Child product: ${normalId}`);
+          } catch (err) {
+            console.error("Error generating Normal ID:", err);
+          }
+        }
+
+        // ✅ NEW: Read images from folder if imageFolder and masterImage columns exist
+        let masterImage = null;
+        let moreImagesArray = [];
+        
+        const imageFolder = getColumnValue(row, "imageFolder", "image_folder");
+        const masterImageFilename = getColumnValue(row, "masterImage", "master_image");
+        const moreImagesStr = getColumnValue(row, "moreImages", "more_images");
+        
+        // Helper function to find image with alternate extensions
+        const findImage = (basePath, filename) => {
+          const fullPath = path.join(basePath, filename);
+          if (fs.existsSync(fullPath)) return fullPath;
+          
+          // Try alternate extensions
+          const nameWithoutExt = filename.replace(/\.[^/.]+$/, "");
+          const alternates = ['.jpg', '.jpeg', '.jfif', '.png', '.gif', '.webp'];
+          for (const ext of alternates) {
+            const altPath = path.join(basePath, nameWithoutExt + ext);
+            if (fs.existsSync(altPath)) {
+              console.log(`   🔄 Found alternate: ${nameWithoutExt + ext}`);
+              return altPath;
+            }
+          }
+          
+          // Try double extension (e.g., cctv_003_2.jpg.jpg when looking for cctv_003_2.jpg)
+          const doubleExtPath = path.join(basePath, filename + '.jpg');
+          if (fs.existsSync(doubleExtPath)) {
+            console.log(`   🔄 Found double extension: ${filename}.jpg`);
+            return doubleExtPath;
+          }
+          
+          return null;
+        };
+        
+        if (imageFolder && masterImageFilename) {
+          const basePath = path.join(__dirname, "../../frontend/public/product-images", imageFolder);
+          const imagePath = findImage(basePath, masterImageFilename);
+          console.log(`🖼️ Looking for image: ${path.join(basePath, masterImageFilename)}`);
+          
+          if (imagePath) {
+            try {
+              const imageBuffer = fs.readFileSync(imagePath);
+              const ext = path.extname(imagePath).toLowerCase();
+              let contentType = 'image/jpeg';
+              if (ext === '.png') contentType = 'image/png';
+              else if (ext === '.gif') contentType = 'image/gif';
+              else if (ext === '.webp') contentType = 'image/webp';
+              // .jfif and .jpeg are treated as jpeg
+              
+              masterImage = {
+                data: imageBuffer,
+                contentType: contentType
+              };
+              console.log(`   ✅ Master image loaded: ${path.basename(imagePath)}`);
+            } catch (imgErr) {
+              console.warn(`   ⚠️ Could not read image: ${imgErr.message}`);
+            }
+          } else {
+            console.log(`   ⚠️ Image not found: ${masterImageFilename}`);
+          }
+          
+          // Read more images if specified
+          if (moreImagesStr) {
+            const moreImageFilenames = moreImagesStr.split(',').map(f => f.trim()).filter(f => f);
+            for (const filename of moreImageFilenames) {
+              const morePath = findImage(basePath, filename);
+              if (morePath) {
+                try {
+                  const moreBuffer = fs.readFileSync(morePath);
+                  const moreExt = path.extname(morePath).toLowerCase();
+                  let moreContentType = 'image/jpeg';
+                  if (moreExt === '.png') moreContentType = 'image/png';
+                  else if (moreExt === '.gif') moreContentType = 'image/gif';
+                  else if (moreExt === '.webp') moreContentType = 'image/webp';
+                  
+                  moreImagesArray.push({
+                    data: moreBuffer,
+                    contentType: moreContentType
+                  });
+                  console.log(`   ✅ Additional image loaded: ${path.basename(morePath)}`);
+                } catch (moreErr) {
+                  console.warn(`   ⚠️ Could not read additional image ${filename}: ${moreErr.message}`);
+                }
+              }
+            }
+          }
+        }
+
         // Create the product
         const product = new Product({
           productType,
@@ -965,6 +1084,7 @@ router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
           parentProduct,
           varianceName,
           subtitleDescription,
+          normalId, // ✅ Add normalId for child products
           globalTradeItemNumber,
           k3lNumber,
           sniNumber,
@@ -1005,14 +1125,19 @@ router.post("/upload-excel", excelUpload.single("file"), async (req, res) => {
           categories,
           subCategories,
           tags,
+          masterImage,              // ✅ Add master image
+          moreImages: moreImagesArray,  // ✅ Add more images
         });
 
         await product.save();
         stats.created++;
         createdProducts.push({
           productId: product.productId,
+          normalId: product.normalId,
           productName: product.productName,
+          productType: product.productType,
           categories: product.categories,
+          hasImage: !!masterImage,
         });
 
         // ✅ Sync categories to Category collection for chatbot display
