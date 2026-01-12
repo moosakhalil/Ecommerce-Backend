@@ -311,19 +311,26 @@ videoSchema.statics.getAllVideoStats = async function () {
   };
 };
 
-// Get videos by type
+// Get videos by type - OPTIMIZED: excludes base64Data for faster listing
 videoSchema.statics.getVideosByType = async function (videoType) {
-  return await this.find({ videoType }).sort({ uploadDate: -1 });
+  return await this.find({ videoType })
+    .select('-base64Data -thumbnail') // Exclude heavy fields for list view
+    .sort({ uploadDate: -1 });
 };
 
-// Get referral videos (159A)
+// Get referral videos (159A) - OPTIMIZED for list view
 videoSchema.statics.getReferralVideos = async function () {
   return await this.getVideosByType("referral");
 };
 
-// Get introduction videos (159B)
+// Get introduction videos (159B) - OPTIMIZED for list view
 videoSchema.statics.getIntroductionVideos = async function () {
   return await this.getVideosByType("introduction");
+};
+
+// Get single video with full data (including base64)
+videoSchema.statics.getVideoDataById = async function (videoId) {
+  return await this.findById(videoId).select('+base64Data +thumbnail');
 };
 
 // Pre-save middleware to update currently active status

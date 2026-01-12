@@ -406,6 +406,47 @@ router.get("/:customerId/referral-details", async (req, res) => {
   }
 });
 
+// GET /api/foreman-customers/:customerId/payment-history - Get commission payment history
+router.get("/:customerId/payment-history", async (req, res) => {
+  try {
+    const { customerId } = req.params;
+
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found",
+      });
+    }
+
+    // Get payment history from commissionTracking.commissionHistory
+    const allHistory = customer.commissionTracking?.commissionHistory || [];
+    
+    // Filter only "paid" type entries for payment history
+    const paymentHistory = allHistory
+      .filter(entry => entry.type === "paid")
+      .sort((a, b) => new Date(b.date || b.paidDate) - new Date(a.date || a.paidDate));
+
+    res.json({
+      success: true,
+      paymentHistory: paymentHistory,
+      summary: {
+        totalPayments: paymentHistory.length,
+        totalPaid: customer.commissionTracking?.totalCommissionPaid || 0,
+        totalEarned: customer.commissionTracking?.totalCommissionEarned || 0,
+        availableCommission: customer.commissionTracking?.availableCommission || 0,
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching payment history:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching payment history",
+      error: error.message,
+    });
+  }
+});
+
 // GET /api/foreman-customers/:customerId - Get detailed customer information
 router.get("/:customerId", async (req, res) => {
   try {

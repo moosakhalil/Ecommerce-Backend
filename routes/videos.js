@@ -343,6 +343,26 @@ router.delete("/introduction/:id", async (req, res) => {
 
 // ===== UTILITY ROUTES =====
 
+// GET - Get video data by ID (including base64 for playback) - LAZY LOADING
+router.get("/data/:id", async (req, res) => {
+  try {
+    const video = await Video.findById(req.params.id);
+    
+    if (!video) {
+      return res.status(404).json({ error: "Video not found" });
+    }
+    
+    // Return only the necessary data for video playback
+    res.json({
+      _id: video._id,
+      base64Data: video.base64Data,
+      mimetype: video.mimetype,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET - Get currently active videos
 router.get("/active", async (req, res) => {
   try {
