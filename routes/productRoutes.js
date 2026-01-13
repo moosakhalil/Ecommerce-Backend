@@ -2383,6 +2383,8 @@ router.put("/:id/supplier", async (req, res) => {
 // ─── UPDATE Endpoint ─────────────────────────────────────────────────────
 router.put("/:id", uploadFields, async (req, res) => {
   try {
+    console.log("PUT /:id - Updating product:", req.params.id);
+    console.log("Request body:", req.body);
     const b = req.body;
     const updates = {};
 
@@ -2514,6 +2516,7 @@ router.put("/:id", uploadFields, async (req, res) => {
     const out = product.toObject();
     out.weight = out.specifications?.[0]?.weight ?? null;
 
+    console.log("Product updated successfully:", product._id);
     return res.json({ success: true, data: out });
   } catch (err) {
     console.error("Error updating product:", err);

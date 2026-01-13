@@ -243,6 +243,99 @@ async function sendImageWithCaption(to, imagePath, caption) {
 }
 
 /**
+ * Send product images (master + additional images)
+ * @param {string} to - Recipient phone number
+ * @param {Object} product - Product object with masterImage and moreImages
+ * @param {string} caption - Caption for the first image
+ */
+async function sendProductImages(to, product, caption) {
+  try {
+    const cleanTo = to.replace(/@c\.us|@s\.whatsapp\.net/g, "");
+    const images = [];
+
+    // Add master image if available
+    if (product.masterImage && product.masterImage.data) {
+      images.push({
+        buffer: Buffer.isBuffer(product.masterImage.data)
+          ? product.masterImage.data
+          : Buffer.from(product.masterImage.data),
+        contentType: product.masterImage.contentType || "image/jpeg",
+      });
+    }
+
+    // Add more images if available
+    if (product.moreImages && Array.isArray(product.moreImages)) {
+      product.moreImages.forEach((img) => {
+        if (img && img.data) {
+          images.push({
+            buffer: Buffer.isBuffer(img.data)
+              ? img.data
+              : Buffer.from(img.data),
+            contentType: img.contentType || "image/jpeg",
+          });
+        }
+      });
+    }
+
+    if (images.length === 0) {
+      // No images, send text only
+      await sendWhatsAppMessage(to, caption);
+      return;
+    }
+
+    // Send first image with caption
+    const firstImage = images[0];
+    const base64 = firstImage.buffer.toString("base64");
+    const formData = new URLSearchParams();
+    formData.append("token", ULTRAMSG_CONFIG.token);
+    formData.append("to", cleanTo);
+    formData.append("image", `data:${firstImage.contentType};base64,${base64}`);
+    formData.append("caption", caption);
+
+    await axios.post(
+      `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
+      formData,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    console.log(`📸 Sent image 1/${images.length}`);
+
+    // Send additional images without caption (with small delay)
+    for (let i = 1; i < images.length; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay
+      const img = images[i];
+      const imgBase64 = img.buffer.toString("base64");
+      const imgFormData = new URLSearchParams();
+      imgFormData.append("token", ULTRAMSG_CONFIG.token);
+      imgFormData.append("to", cleanTo);
+      imgFormData.append("image", `data:${img.contentType};base64,${imgBase64}`);
+      imgFormData.append("caption", `Image ${i + 1}/${images.length}`);
+
+      await axios.post(
+        `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
+        imgFormData,
+        {
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+        }
+      );
+
+      console.log(`📸 Sent image ${i + 1}/${images.length}`);
+    }
+
+    console.log(`✅ Sent all ${images.length} product images`);
+  } catch (error) {
+    console.error("❌ Error sending product images:", error);
+    await sendWhatsAppMessage(to, caption);
+  }
+}
+
+/**
  * Download media from Ultramsg
  */
 
@@ -1519,38 +1612,14 @@ async function sendProductDetailsFromCart(to, customer, product) {
       message += `\n`;
     }
 
-    if (product.masterImage) {
+    // Send product images (master + additional)
+    if (product.masterImage && product.masterImage.data) {
       try {
-        if (product.masterImage.data) {
-          const buf = Buffer.isBuffer(product.masterImage.data)
-            ? product.masterImage.data
-            : Buffer.from(product.masterImage.data);
-          const base64 = buf.toString("base64");
-
-          const cleanTo = to.replace(/@c\.us|@s\.whatsapp\.net/g, "");
-          const mimeType = product.masterImage.contentType || "image/jpeg";
-
-          const formData = new URLSearchParams();
-          formData.append("token", ULTRAMSG_CONFIG.token);
-          formData.append("to", cleanTo);
-          formData.append("image", `data:${mimeType};base64,${base64}`);
-          formData.append("caption", message);
-
-          const response = await axios.post(
-            `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
-            formData,
-            {
-              headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-            }
-          );
-
-          console.log("📸 Product details with image sent successfully");
-          return;
-        }
+        await sendProductImages(to, product, message);
+        console.log("📸 Product details with images sent successfully");
+        return;
       } catch (error) {
-        console.error("❌ Error sending product image from cart:", error);
+        console.error("❌ Error sending product images from cart:", error);
       }
     }
 
@@ -3061,34 +3130,10 @@ async function processChatMessage(phoneNumber, text, message) {
               `${product.description || ""}\n\n` +
               `💰 Price: Rp ${price}`;
 
-            // Send with image if available
+            // Send with images if available
             if (product.masterImage && product.masterImage.data) {
               try {
-                const buf = Buffer.isBuffer(product.masterImage.data)
-                  ? product.masterImage.data
-                  : product.masterImage.data.buffer;
-                const base64 = buf.toString("base64");
-                const cleanTo = phoneNumber.replace(
-                  /@c\.us|@s\.whatsapp\.net/g,
-                  ""
-                );
-                const mimeType = product.masterImage.contentType || "image/png";
-
-                const formData = new URLSearchParams();
-                formData.append("token", ULTRAMSG_CONFIG.token);
-                formData.append("to", cleanTo);
-                formData.append("image", `data:${mimeType};base64,${base64}`);
-                formData.append("caption", caption);
-
-                await axios.post(
-                  `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
-                  formData,
-                  {
-                    headers: {
-                      "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                  }
-                );
+                await sendProductImages(phoneNumber, product, caption);
               } catch (error) {
                 await sendWhatsAppMessage(phoneNumber, caption);
               }
@@ -12886,37 +12931,14 @@ async function sendProductDetails(to, customer, product) {
     `2- No return to previous menu\n` +
     `3- Return to main menu`;
 
-  // If we have an image buffer, send it with the caption using Ultramsg
+  // Send product images (master + additional)
   if (product.masterImage && product.masterImage.data) {
     try {
-      const buf = Buffer.isBuffer(product.masterImage.data)
-        ? product.masterImage.data
-        : product.masterImage.data.buffer;
-      const base64 = buf.toString("base64");
-
-      const cleanTo = to.replace(/@c\.us|@s\.whatsapp\.net/g, "");
-      const mimeType = product.masterImage.contentType || "image/png";
-
-      const formData = new URLSearchParams();
-      formData.append("token", ULTRAMSG_CONFIG.token);
-      formData.append("to", cleanTo);
-      formData.append("image", `data:${mimeType};base64,${base64}`);
-      formData.append("caption", caption);
-
-      const response = await axios.post(
-        `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
-        formData,
-        {
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-        }
-      );
-
-      console.log("📸 Product image sent successfully");
+      await sendProductImages(to, product, caption);
+      console.log("📸 Product images sent successfully");
       return;
     } catch (error) {
-      console.error("❌ Error sending product image:", error);
+      console.error("❌ Error sending product images:", error);
       // Fallback to text only
     }
   }
