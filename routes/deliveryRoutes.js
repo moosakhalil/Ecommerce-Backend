@@ -108,7 +108,7 @@ router.post("/initialize-tracking", async (req, res) => {
   }
 });
 
-// ✅ FIXED: Order Overview - EXTRACTS ALL LOCATION DATA FROM MULTIPLE SOURCES
+// ✅ OPTIMIZED: Order Overview - Uses batch query for better performance
 router.get("/orders/overview", async (req, res) => {
   try {
     const { status, priority, search } = req.query;
@@ -149,35 +149,58 @@ router.get("/orders/overview", async (req, res) => {
       ];
     }
 
-    const customers = await Customer.find(customerQuery);
+    const customers = await Customer.find(customerQuery).lean();
+
+    // ✅ OPTIMIZATION: Collect all order IDs first
+    const validStatuses = [
+      "order-confirmed",
+      "picking-order",
+      "allocated-driver",
+      "ready-to-pickup",
+      "order-picked-up",
+      "on-way",
+      "driver-confirmed",
+      "order-processed",
+    ];
+    
+    const allOrderIds = [];
+    for (let customer of customers) {
+      for (let order of customer.shoppingHistory) {
+        if (validStatuses.includes(order.status)) {
+          allOrderIds.push(order.orderId);
+        }
+      }
+    }
+
+    // ✅ OPTIMIZATION: Batch fetch all tracking records at once
+    const trackingRecords = await DeliveryTracking.find({
+      orderId: { $in: allOrderIds }
+    }).lean();
+    
+    // Create a map for O(1) lookup
+    const trackingMap = new Map();
+    trackingRecords.forEach(t => trackingMap.set(t.orderId, t));
 
     let allOrders = [];
 
     for (let customer of customers) {
       for (let order of customer.shoppingHistory) {
-        if (
-          ![
-            "order-confirmed",
-            "picking-order",
-            "allocated-driver",
-            "ready-to-pickup",
-            "order-picked-up",
-            "on-way",
-            "driver-confirmed",
-            "order-processed",
-          ].includes(order.status)
-        ) {
+        if (!validStatuses.includes(order.status)) {
           continue;
         }
 
-        let tracking = await DeliveryTracking.findOne({
-          orderId: order.orderId,
-        });
+        // ✅ OPTIMIZATION: Use map lookup instead of DB query
+        let tracking = trackingMap.get(order.orderId);
+        
+        // Only create tracking if it doesn't exist (rare case)
         if (!tracking) {
-          tracking = await DeliveryTracking.createFromCustomerOrder(
-            customer,
-            order
-          );
+          try {
+            tracking = await DeliveryTracking.createFromCustomerOrder(customer, order);
+            trackingMap.set(order.orderId, tracking);
+          } catch (e) {
+            console.error(`Error creating tracking for ${order.orderId}:`, e.message);
+            tracking = null;
+          }
         }
 
         const totalAmount = order.totalAmount || 0;
@@ -195,7 +218,7 @@ router.get("/orders/overview", async (req, res) => {
         const totalItems = order.items
           ? order.items.reduce((sum, item) => sum + (item.quantity || 1), 0)
           : 0;
-        const workflowProgress = getWorkflowProgress(tracking);
+        const workflowProgress = tracking ? getWorkflowProgress(tracking) : {};
 
         // ✅ GET LOCATION DATA FROM ALL SOURCES
         const locationData = getLocationData(customer, order);
@@ -338,6 +361,7 @@ router.get("/orders/overview", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch orders overview" });
   }
 });
+
 
 router.get("/workflow-status", async (req, res) => {
   try {
