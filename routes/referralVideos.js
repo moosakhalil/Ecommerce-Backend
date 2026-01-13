@@ -3,6 +3,81 @@ const express = require("express");
 const router = express.Router();
 const Customer = require("../models/customer");
 const mongoose = require("mongoose");
+const axios = require("axios");
+
+// Ultramsg Configuration for WhatsApp
+const ULTRAMSG_CONFIG = {
+  instanceId: "instance143389",
+  token: "e5qifsg0mzq0ylng",
+  baseURL: "https://api.ultramsg.com",
+};
+
+// Merged rejection reasons (existing + new from screenshot)
+const REJECTION_REASONS = {
+  // Existing reasons
+  vulgar: "Vulgar content",
+  error: "Error in video",
+  spam: "Spam content",
+  not_good_enough: "Not good enough quality",
+  other: "Other reason",
+  // New reasons from screenshot
+  video_quality_unclear: "Video quality is unclear (blurred, low resolution, or poor lighting)",
+  audio_not_clear: "Audio is not clear or has background noise",
+  instructions_not_followed: "Required instructions were not followed",
+  incomplete_information: "Incomplete or missing information",
+  duration_not_met: "Video duration does not meet the requirement",
+  content_mismatch: "Content does not match referral guidelines",
+  face_not_visible: "Face is not clearly visible",
+  duplicate_video: "Duplicate or previously submitted video",
+};
+
+/**
+ * Send WhatsApp message for video rejection
+ */
+async function sendVideoRejectionWhatsApp(phoneNumber, rejectionReasons) {
+  try {
+    // Clean phone number
+    const cleanPhone = phoneNumber.replace(/@c\.us|@s\.whatsapp\.net/g, "");
+    
+    // Build the rejection reasons list
+    const reasonsList = rejectionReasons
+      .map(reason => `❌ ${REJECTION_REASONS[reason] || reason}`)
+      .join("\n");
+    
+    const message = `📹 *Referral Video Rejected*
+
+Your referral video was rejected due to one or more of the following reasons:
+
+${reasonsList}
+
+Please review the guidelines and upload a new video addressing the mentioned issues.
+
+Need help? Reply to this message for assistance.`;
+
+    console.log(`📤 Sending rejection WhatsApp to ${cleanPhone}`);
+
+    const response = await axios.post(
+      `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/chat`,
+      `token=${ULTRAMSG_CONFIG.token}&to=${cleanPhone}&body=${encodeURIComponent(message)}`,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    if (response.data.sent) {
+      console.log(`✅ Rejection WhatsApp sent successfully to ${cleanPhone}`);
+      return { success: true, data: response.data };
+    } else {
+      console.error(`❌ Failed to send rejection WhatsApp:`, response.data);
+      return { success: false, error: response.data };
+    }
+  } catch (error) {
+    console.error(`❌ Error sending rejection WhatsApp:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
 
 // GET /api/referral-videos - Fetch videos by status
 router.get("/", async (req, res) => {
@@ -107,7 +182,7 @@ router.get("/", async (req, res) => {
 // POST /api/referral-videos/update-status - Update video status
 router.post("/update-status", async (req, res) => {
   try {
-    const { customerId, videoId, status, rejectionReason, note } = req.body;
+    const { customerId, videoId, status, rejectionReasons, note } = req.body;
 
     // Validate required fields
     if (!customerId || !videoId || !status) {
@@ -126,13 +201,18 @@ router.post("/update-status", async (req, res) => {
       });
     }
 
-    // Validate rejection reason if status is not_passed (video not passed)
-    const validRejectionReasons = ["vulgar", "error", "spam", "not_good_enough", "other"];
-    if (status === "not_passed" && rejectionReason && !validRejectionReasons.includes(rejectionReason)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid rejection reason. Must be one of: ${validRejectionReasons.join(", ")}`,
-      });
+    // Validate rejection reasons if status is not_passed (now supports array)
+    const validRejectionReasons = Object.keys(REJECTION_REASONS);
+    if (status === "not_passed" && rejectionReasons) {
+      // Support both single reason (string) and multiple reasons (array)
+      const reasonsArray = Array.isArray(rejectionReasons) ? rejectionReasons : [rejectionReasons];
+      const invalidReasons = reasonsArray.filter(r => !validRejectionReasons.includes(r));
+      if (invalidReasons.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid rejection reason(s): ${invalidReasons.join(", ")}. Valid options: ${validRejectionReasons.join(", ")}`,
+        });
+      }
     }
 
     console.log(
@@ -165,10 +245,17 @@ router.post("/update-status", async (req, res) => {
     customer.referralvideos[videoIndex].status = status;
     customer.referralvideos[videoIndex].statusUpdatedAt = new Date();
 
-    // Store rejection reason and note if status is not_passed (video not passed)
+    // Store rejection reasons and note if status is not_passed (video not passed)
+    let reasonsArray = [];
     if (status === "not_passed") {
-      customer.referralvideos[videoIndex].rejectionReason = rejectionReason || null;
+      // Support both single reason and array of reasons
+      reasonsArray = rejectionReasons 
+        ? (Array.isArray(rejectionReasons) ? rejectionReasons : [rejectionReasons])
+        : [];
+      customer.referralvideos[videoIndex].rejectionReasons = reasonsArray;
       customer.referralvideos[videoIndex].rejectionNote = note || null;
+      // Keep backward compatibility
+      customer.referralvideos[videoIndex].rejectionReason = reasonsArray[0] || null;
     }
 
     // Add admin log if needed
@@ -179,13 +266,25 @@ router.post("/update-status", async (req, res) => {
     customer.referralvideos[videoIndex].statusHistory.push({
       status: status,
       updatedAt: new Date(),
-      updatedBy: "admin", // You can add actual admin user info here
-      ...(status === "not_passed" && { rejectionReason: rejectionReason || null, note: note || null }),
+      updatedBy: "admin",
+      ...(status === "not_passed" && { rejectionReasons: reasonsArray, note: note || null }),
     });
 
     await customer.save();
 
     console.log(`Successfully updated video ${videoId} to status: ${status}`);
+
+    // Send WhatsApp notification if video is rejected
+    let whatsappResult = null;
+    if (status === "not_passed" && reasonsArray.length > 0) {
+      const phoneNumber = customer.phoneNumber?.[0];
+      if (phoneNumber) {
+        whatsappResult = await sendVideoRejectionWhatsApp(phoneNumber, reasonsArray);
+        console.log(`WhatsApp rejection notification result:`, whatsappResult.success ? "Sent" : "Failed");
+      } else {
+        console.log(`No phone number found for customer ${customerId}`);
+      }
+    }
 
     res.json({
       success: true,
@@ -195,6 +294,7 @@ router.post("/update-status", async (req, res) => {
         status: status,
         updatedAt: new Date(),
       },
+      whatsappSent: whatsappResult?.success || false,
     });
   } catch (error) {
     console.error("Error updating video status:", error);
