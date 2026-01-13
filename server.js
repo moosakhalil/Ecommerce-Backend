@@ -374,6 +374,10 @@ app.use("/api/tracking", productTrackingRoutes);
 const batchDiscountRoutes = require("./routes/batchDiscountRoutes");
 app.use("/api/batch-discounts", batchDiscountRoutes);
 
+// Chatbot Monitor routes (for testing/verification)
+const chatbotMonitorRoutes = require("./routes/chatbotMonitorRoutes");
+app.use("/api/chatbot-monitor", chatbotMonitorRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict

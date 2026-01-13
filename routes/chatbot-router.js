@@ -85,12 +85,74 @@ async function getNextSequence(name) {
   return counter.seq;
 }
 
+// Import ChatbotMonitor model for message monitoring
+const ChatbotMonitor = require("../models/ChatbotMonitor");
+
 // ============================================================================
 // ULTRAMSG API FUNCTIONS
 // ============================================================================
 
 /**
- * Send a text message via Ultramsg API
+ * Send message to a single recipient (internal helper - no monitoring)
+ */
+async function sendMessageDirect(to, content) {
+  try {
+    const cleanTo = to.replace(/@c\.us|@s\.whatsapp\.net/g, "");
+    
+    const response = await axios.post(
+      `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/chat`,
+      `token=${ULTRAMSG_CONFIG.token}&to=${cleanTo}&body=${encodeURIComponent(content)}`,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    return response.data.sent ? { success: true, data: response.data } : { success: false, error: response.data };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Send copies of message to all active monitor numbers
+ */
+async function sendToMonitorNumbers(originalTo, content) {
+  try {
+    const monitors = await ChatbotMonitor.getActiveMonitors();
+    
+    if (monitors.length === 0) return;
+
+    const timestamp = new Date().toLocaleString("en-GB", { timeZone: "Asia/Karachi" });
+    
+    for (const monitor of monitors) {
+      // Skip if monitor number is the same as recipient (avoid loops)
+      if (monitor.phoneNumber === originalTo.replace(/\D/g, "")) continue;
+      
+      // Build monitor copy message with metadata header
+      const monitorMessage = `📊 *CHATBOT MONITOR*
+━━━━━━━━━━━━━━━━━━━━
+📱 To: ${originalTo}
+⏰ Time: ${timestamp}
+━━━━━━━━━━━━━━━━━━━━
+
+${content}`;
+
+      // Send to monitor (use direct to avoid infinite loop)
+      await sendMessageDirect(monitor.phoneNumber, monitorMessage);
+      
+      // Update monitor stats
+      await monitor.recordMessage();
+    }
+  } catch (error) {
+    console.error("❌ Error sending to monitors:", error.message);
+    // Don't throw - monitoring failure shouldn't break main message
+  }
+}
+
+/**
+ * Send a text message via Ultramsg API (with monitoring)
  */
 async function sendWhatsAppMessage(to, content) {
   try {
@@ -115,6 +177,12 @@ async function sendWhatsAppMessage(to, content) {
 
     if (response.data.sent) {
       console.log(`✅ Message sent successfully to ${cleanTo}`);
+      
+      // Send copy to monitor numbers (async, don't wait)
+      sendToMonitorNumbers(cleanTo, content).catch(err => 
+        console.error("Monitor copy error:", err.message)
+      );
+      
       return { success: true, data: response.data };
     } else {
       console.error(`❌ Failed to send message:`, response.data);
