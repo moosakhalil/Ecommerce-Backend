@@ -810,7 +810,60 @@ async function checkAndSendConfirmations() {
   }
 }
 
-// Helper function to get active areas from AreaB (114 Delivery Fees)
+// Helper function to get all regencies for step 1 selection
+const getAllRegencies = async () => {
+  try {
+    const regencies = await Regency.find().sort({ name: 1 });
+    return regencies;
+  } catch (error) {
+    console.error("Error fetching regencies:", error);
+    return [];
+  }
+};
+
+// Helper function to format regencies list for display
+const formatRegenciesForDisplay = (regencies) => {
+  let message = "";
+  regencies.forEach((regency, index) => {
+    message += `${index + 1}. ${regency.name}\n`;
+  });
+  return message;
+};
+
+// Helper function to get areas by regency ID for step 2 selection
+const getAreasByRegencyId = async (regencyId) => {
+  try {
+    const areas = await AreaB.find({ regencyId })
+      .populate({ path: 'regencyId', select: 'name' })
+      .sort({ name: 1 });
+    
+    return areas.map(area => ({
+      ...area.toObject(),
+      regencyName: area.regencyId?.name || 'Unknown',
+      displayName: area.displayName || area.name,
+      truckPrice: area.truckPrice || 0,
+      scooterPrice: area.scooterPrice || 0
+    }));
+  } catch (error) {
+    console.error("Error fetching areas by regency:", error);
+    return [];
+  }
+};
+
+// Helper function to format areas within a regency for display
+const formatAreasInRegencyForDisplay = (areas) => {
+  let message = "";
+  areas.forEach((area, index) => {
+    const feeText =
+      area.truckPrice > 0 || area.scooterPrice > 0
+        ? ` (Truck: ₹${area.truckPrice}, Scooter: ₹${area.scooterPrice})`
+        : " (Free)";
+    message += `${index + 1}. ${area.displayName}${feeText}\n`;
+  });
+  return message;
+};
+
+// Helper function to get active areas from AreaB (114 Delivery Fees) - for fallback
 const getActiveAreas = async () => {
   try {
     // Fetch all areas from AreaB with regency info populated
@@ -835,7 +888,7 @@ const getActiveAreas = async () => {
   }
 };
 
-// Helper function to format areas for display grouped by Regency
+// Helper function to format areas for display grouped by Regency - for fallback
 const formatAreasForDisplay = (areas) => {
   // Group areas by regency
   const groupedByRegency = {};
@@ -3311,15 +3364,15 @@ async function processChatMessage(phoneNumber, text, message) {
                 "3. Later (choose from calendar)"
             );
           } else {
-            // Delivery options - go to location selection
-            await customer.updateConversationState("checkout_location");
+            // Delivery options - go to REGENCY selection first (Step 1)
+            await customer.updateConversationState("checkout_select_regency");
 
-            const activeAreas = await getActiveAreas();
-            const areasDisplay = formatAreasForDisplay(activeAreas);
+            const regencies = await getAllRegencies();
+            const regenciesDisplay = formatRegenciesForDisplay(regencies);
 
             const locPrompt = customer.addresses?.length
-              ? `Select a drop-off location:\n${areasDisplay}\n\nOr type 'saved' to use a saved address.`
-              : `Select drop-off location:\n${areasDisplay}`;
+              ? `Select a regency:\n\n${regenciesDisplay}\nOr type 'saved' to use a saved address.`
+              : `Select a regency:\n\n${regenciesDisplay}`;
 
             await sendWhatsAppMessage(phoneNumber, locPrompt);
             break;
@@ -3375,17 +3428,91 @@ async function processChatMessage(phoneNumber, text, message) {
           `✅ Eco delivery scheduled for ${text}. 5% discount applied!`
         );
 
-        // Now ask for delivery location with dynamic areas
-        await customer.updateConversationState("checkout_location");
-        const activeAreas2 = await getActiveAreas();
-        const areasDisplay = formatAreasForDisplay(activeAreas2);
+        // Now ask for regency selection first (Step 1)
+        await customer.updateConversationState("checkout_select_regency");
+        const regencies2 = await getAllRegencies();
+        const regenciesDisplay2 = formatRegenciesForDisplay(regencies2);
 
         await sendWhatsAppMessage(
           phoneNumber,
-          `Select drop-off location:\n\n${areasDisplay}`
+          `Select a regency:\n\n${regenciesDisplay2}`
         );
         break;
 
+      // NEW: Step 1 - Select Regency first
+      case "checkout_select_regency":
+        // Check if customer wants saved addresses
+        if (customer.addresses && customer.addresses.length > 0) {
+          if (text.toLowerCase() === "saved") {
+            await customer.updateConversationState(
+              "checkout_select_saved_address"
+            );
+            let addressMessage =
+              "Please select one of your saved addresses:\n\n";
+
+            customer.addresses.forEach((addr, index) => {
+              const nickname = addr.nickname || "Address";
+              const area = addr.area ? ` (${addr.area})` : "";
+              const fullAddress = addr.fullAddress || "No detail address";
+              addressMessage += `${
+                index + 1
+              }. ${nickname}: ${fullAddress}${area}\n`;
+            });
+
+            addressMessage +=
+              "\nType the number of the address you want to use.";
+            await sendWhatsAppMessage(phoneNumber, addressMessage);
+            return;
+          }
+        }
+
+        // Handle regency selection
+        const regencies = await getAllRegencies();
+        const regencyIndex = parseInt(text) - 1;
+
+        if (regencyIndex >= 0 && regencyIndex < regencies.length) {
+          const selectedRegency = regencies[regencyIndex];
+          
+          // Store selected regency ID in context for next step
+          customer.contextData.selectedRegencyId = selectedRegency._id.toString();
+          customer.contextData.selectedRegencyName = selectedRegency.name;
+          await customer.save();
+
+          // Get areas in this regency
+          const areasInRegency = await getAreasByRegencyId(selectedRegency._id);
+          
+          if (areasInRegency.length === 0) {
+            await sendWhatsAppMessage(
+              phoneNumber,
+              `No areas found in ${selectedRegency.name}. Please select a different regency.`
+            );
+            const regenciesDisplay = formatRegenciesForDisplay(regencies);
+            await sendWhatsAppMessage(
+              phoneNumber,
+              `Select a regency:\n\n${regenciesDisplay}`
+            );
+            return;
+          }
+
+          const areasDisplay = formatAreasInRegencyForDisplay(areasInRegency);
+
+          // Move to Step 2 - Area selection
+          await customer.updateConversationState("checkout_location");
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `📍 *${selectedRegency.name}*\n\nSelect an area:\n\n${areasDisplay}`
+          );
+        } else {
+          // Invalid selection - show regencies again
+          const regenciesDisplay = formatRegenciesForDisplay(regencies);
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `Please select a valid regency number (1-${regencies.length}):\n\n${regenciesDisplay}`
+          );
+        }
+        break;
+
+      // Step 2 - Select Area within the selected Regency
       case "checkout_location":
         // Check if customer has saved addresses
         if (customer.addresses && customer.addresses.length > 0) {
@@ -3411,11 +3538,28 @@ async function processChatMessage(phoneNumber, text, message) {
             return;
           }
         }
-        const activeAreas = await getActiveAreas();
-        const selectedIndex = parseInt(text) - 1;
+        
+        // Get areas from the selected regency (stored in context from Step 1)
+        const selectedRegencyId = customer.contextData?.selectedRegencyId;
+        const selectedRegencyName = customer.contextData?.selectedRegencyName || "Selected Regency";
+        
+        if (!selectedRegencyId) {
+          // Fallback: if no regency selected, go back to regency selection
+          await customer.updateConversationState("checkout_select_regency");
+          const fallbackRegencies = await getAllRegencies();
+          const fallbackRegenciesDisplay = formatRegenciesForDisplay(fallbackRegencies);
+          await sendWhatsAppMessage(
+            phoneNumber,
+            `Please select a regency first:\n\n${fallbackRegenciesDisplay}`
+          );
+          return;
+        }
 
-        if (selectedIndex >= 0 && selectedIndex < activeAreas.length) {
-          const selectedArea = activeAreas[selectedIndex];
+        const areasInSelectedRegency = await getAreasByRegencyId(selectedRegencyId);
+        const selectedAreaIndex = parseInt(text) - 1;
+
+        if (selectedAreaIndex >= 0 && selectedAreaIndex < areasInSelectedRegency.length) {
+          const selectedArea = areasInSelectedRegency[selectedAreaIndex];
 
           // Use regencyName and displayName from AreaB model (114 Delivery Fees)
           customer.cart.deliveryLocation = `${selectedArea.regencyName} - ${selectedArea.displayName}`;
@@ -3440,6 +3584,10 @@ async function processChatMessage(phoneNumber, text, message) {
             }
             customer.orderHistory[idx].deliveryAddress.area = selectedArea.displayName;
           }
+          
+          // Clear the selected regency from context
+          customer.contextData.selectedRegencyId = null;
+          customer.contextData.selectedRegencyName = null;
 
           await customer.save();
 
@@ -3463,11 +3611,11 @@ async function processChatMessage(phoneNumber, text, message) {
             "📍 Please provide your exact location using Google Maps link for precise delivery."
           );
         } else {
-          const activeAreas = await getActiveAreas();
-          const areasDisplay = formatAreasForDisplay(activeAreas);
+          // Invalid - show areas in selected regency again
+          const areasDisplay = formatAreasInRegencyForDisplay(areasInSelectedRegency);
           await sendWhatsAppMessage(
             phoneNumber,
-            `Please select a valid location (1-${activeAreas.length}) or type 'saved' for saved addresses.\n\n${areasDisplay}`
+            `📍 *${selectedRegencyName}*\n\nPlease select a valid area (1-${areasInSelectedRegency.length}):\n\n${areasDisplay}`
           );
         }
         break;
