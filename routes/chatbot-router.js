@@ -24,6 +24,7 @@ const Product = require("../models/Product");
 const Customer = require("../models/customer");
 const { processNewOrder } = require("../utils/referralProcessing");
 const Area = require("../models/Areas");
+const { Regency, AreaB } = require("../models/AreaManagement");
 const BatchDiscount = require("../models/BatchDiscount");
 const DiscountEligibility = require("../models/DiscountEligibility");
 const mkdirp = require("mkdirp");
@@ -809,35 +810,53 @@ async function checkAndSendConfirmations() {
   }
 }
 
-// Helper function to get active areas
+// Helper function to get active areas from AreaB (114 Delivery Fees)
 const getActiveAreas = async () => {
   try {
-    return await Area.find({ isActive: true }).sort({ state: 1, area: 1 });
+    // Fetch all areas from AreaB with regency info populated
+    const areas = await AreaB.find()
+      .populate({
+        path: 'regencyId',
+        select: 'name'
+      })
+      .sort({ 'regencyId.name': 1, name: 1 });
+    
+    // Map to include regency name for easier access
+    return areas.map(area => ({
+      ...area.toObject(),
+      regencyName: area.regencyId?.name || 'Unknown',
+      displayName: area.displayName || area.name,
+      truckPrice: area.truckPrice || 0,
+      scooterPrice: area.scooterPrice || 0
+    }));
   } catch (error) {
-    console.error("Error fetching areas:", error);
+    console.error("Error fetching areas from AreaB:", error);
     return [];
   }
 };
 
-// Helper function to format areas for display with state
+// Helper function to format areas for display grouped by Regency
 const formatAreasForDisplay = (areas) => {
-  const groupedByState = {};
+  // Group areas by regency
+  const groupedByRegency = {};
 
   areas.forEach((area) => {
-    if (!groupedByState[area.state]) {
-      groupedByState[area.state] = [];
+    const regencyName = area.regencyName || 'Unknown';
+    if (!groupedByRegency[regencyName]) {
+      groupedByRegency[regencyName] = [];
     }
-    groupedByState[area.state].push(area);
+    groupedByRegency[regencyName].push(area);
   });
 
   let message = "";
   let counter = 1;
 
-  Object.keys(groupedByState)
+  // Sort regencies alphabetically and display
+  Object.keys(groupedByRegency)
     .sort()
-    .forEach((state) => {
-      message += `\n📍 *${state}*\n`;
-      groupedByState[state].forEach((area) => {
+    .forEach((regency) => {
+      message += `\n📍 *${regency}*\n`;
+      groupedByRegency[regency].forEach((area) => {
         const feeText =
           area.truckPrice > 0 || area.scooterPrice > 0
             ? ` (Truck: ₹${area.truckPrice}, Scooter: ₹${area.scooterPrice})`
@@ -3398,27 +3417,28 @@ async function processChatMessage(phoneNumber, text, message) {
         if (selectedIndex >= 0 && selectedIndex < activeAreas.length) {
           const selectedArea = activeAreas[selectedIndex];
 
-          customer.cart.deliveryLocation = `${selectedArea.state} - ${selectedArea.area}`;
+          // Use regencyName and displayName from AreaB model (114 Delivery Fees)
+          customer.cart.deliveryLocation = `${selectedArea.regencyName} - ${selectedArea.displayName}`;
           customer.cart.deliveryCharge = selectedArea.truckPrice; // ✅ Replace, don't add
 
           if (!customer.cart.deliveryAddress) {
             customer.cart.deliveryAddress = {};
           }
-          customer.cart.deliveryAddress.area = selectedArea.area;
-          customer.cart.deliveryAddress.state = selectedArea.state;
+          customer.cart.deliveryAddress.area = selectedArea.displayName;
+          customer.cart.deliveryAddress.state = selectedArea.regencyName;
 
           // Update order history if order exists
           const idx = customer.orderHistory.findIndex(
             (o) => o.orderId === customer.latestOrderId
           );
           if (idx >= 0) {
-            customer.orderHistory[idx].deliveryLocation = selectedArea.name;
+            customer.orderHistory[idx].deliveryLocation = selectedArea.displayName;
             customer.orderHistory[idx].deliveryCharge =
               customer.cart.deliveryCharge;
             if (!customer.orderHistory[idx].deliveryAddress) {
               customer.orderHistory[idx].deliveryAddress = {};
             }
-            customer.orderHistory[idx].deliveryAddress.area = selectedArea.name;
+            customer.orderHistory[idx].deliveryAddress.area = selectedArea.displayName;
           }
 
           await customer.save();
