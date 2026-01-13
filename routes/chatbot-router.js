@@ -3473,10 +3473,21 @@ async function processChatMessage(phoneNumber, text, message) {
         if (regencyIndex >= 0 && regencyIndex < regencies.length) {
           const selectedRegency = regencies[regencyIndex];
           
+          // Ensure contextData exists
+          if (!customer.contextData) {
+            customer.contextData = {};
+          }
+          
           // Store selected regency ID in context for next step
           customer.contextData.selectedRegencyId = selectedRegency._id.toString();
           customer.contextData.selectedRegencyName = selectedRegency.name;
+          
+          // Debug log
+          console.log(`[REGENCY SELECTION] Saving regency: ${selectedRegency.name} (${selectedRegency._id}) for customer ${phoneNumber}`);
+          
           await customer.save();
+          
+          console.log(`[REGENCY SELECTION] Saved. contextData.selectedRegencyId = ${customer.contextData.selectedRegencyId}`);
 
           // Get areas in this regency
           const areasInRegency = await getAreasByRegencyId(selectedRegency._id);
@@ -3498,6 +3509,9 @@ async function processChatMessage(phoneNumber, text, message) {
 
           // Move to Step 2 - Area selection
           await customer.updateConversationState("checkout_location");
+          
+          console.log(`[REGENCY SELECTION] Moving to checkout_location state`);
+          
           await sendWhatsAppMessage(
             phoneNumber,
             `📍 *${selectedRegency.name}*\n\nSelect an area:\n\n${areasDisplay}`
@@ -3539,12 +3553,18 @@ async function processChatMessage(phoneNumber, text, message) {
           }
         }
         
+        // Debug log to check contextData
+        console.log(`[CHECKOUT_LOCATION] Customer ${phoneNumber} - contextData:`, JSON.stringify(customer.contextData));
+        
         // Get areas from the selected regency (stored in context from Step 1)
         const selectedRegencyId = customer.contextData?.selectedRegencyId;
         const selectedRegencyName = customer.contextData?.selectedRegencyName || "Selected Regency";
         
+        console.log(`[CHECKOUT_LOCATION] selectedRegencyId = ${selectedRegencyId}, selectedRegencyName = ${selectedRegencyName}`);
+        
         if (!selectedRegencyId) {
           // Fallback: if no regency selected, go back to regency selection
+          console.log(`[CHECKOUT_LOCATION] No regency found, going back to regency selection`);
           await customer.updateConversationState("checkout_select_regency");
           const fallbackRegencies = await getAllRegencies();
           const fallbackRegenciesDisplay = formatRegenciesForDisplay(fallbackRegencies);

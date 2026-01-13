@@ -1651,6 +1651,10 @@ const customerSchema = new mongoose.Schema(
       complaintMedia: Object,
       textSummary: String,
       isOrderRelated: Boolean,
+      
+      // Regency selection for two-step area flow
+      selectedRegencyId: String,
+      selectedRegencyName: String,
     },
 
     bankAccounts: [
