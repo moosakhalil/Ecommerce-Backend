@@ -11,7 +11,8 @@ const speakeasy = require("speakeasy");
 const QRCode = require("qrcode");
 const rateLimit = require("express-rate-limit");
 
-const Area = require("./models/Areas");
+// Use AreaB model (114 Delivery Fees) - Old Area model (107) is deprecated
+const { AreaB, Regency } = require("./models/AreaManagement");
 const VehicleType = require("./models/VehicleType");
 const DeliveryPeriod = require("./models/DeliveryPeriod");
 const packingRoutes = require("./routes/packingRoutes");
@@ -382,119 +383,8 @@ app.use("/api/chatbot-monitor", chatbotMonitorRoutes);
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict
 
-// ========== AREAS API ENDPOINTS ==========
-
-// API endpoint to get all areas
-app.get("/api/areas", async (req, res) => {
-  try {
-    const areas = await Area.find().sort({ state: 1, area: 1 });
-    res.json(areas);
-  } catch (error) {
-    console.error("Error fetching areas:", error);
-    res.status(500).json({ error: "Failed to fetch areas" });
-  }
-});
-
-// API endpoint to create a new area
-app.post("/api/areas", async (req, res) => {
-  try {
-    const { state, area, displayName, truckPrice, scooterPrice } = req.body;
-
-    if (!state || !area || !displayName) {
-      return res
-        .status(400)
-        .json({ error: "State, area and display name are required" });
-    }
-
-    const existingArea = await Area.findOne({ state, area });
-    if (existingArea) {
-      return res
-        .status(400)
-        .json({ error: "Area already exists in this state" });
-    }
-
-    const newArea = new Area({
-      state,
-      area,
-      displayName,
-      truckPrice: truckPrice || 0,
-      scooterPrice: scooterPrice || 0,
-      isActive: true,
-    });
-
-    const savedArea = await newArea.save();
-    res.status(201).json(savedArea);
-  } catch (error) {
-    console.error("Error creating area:", error);
-    res.status(500).json({ error: "Failed to create area" });
-  }
-});
-
-// API endpoint to update an area
-app.put("/api/areas/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updateData = req.body;
-
-    const updatedArea = await Area.findByIdAndUpdate(
-      id,
-      { ...updateData, updatedAt: Date.now() },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedArea) {
-      return res.status(404).json({ error: "Area not found" });
-    }
-
-    res.json(updatedArea);
-  } catch (error) {
-    console.error("Error updating area:", error);
-    res.status(500).json({ error: "Failed to update area" });
-  }
-});
-
-// API endpoint to delete an area
-app.delete("/api/areas/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const deletedArea = await Area.findByIdAndDelete(id);
-
-    if (!deletedArea) {
-      return res.status(404).json({ error: "Area not found" });
-    }
-
-    res.json({ message: "Area deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting area:", error);
-    res.status(500).json({ error: "Failed to delete area" });
-  }
-});
-
-// API endpoint to get only active areas
-app.get("/api/areas/active", async (req, res) => {
-  try {
-    const activeAreas = await Area.find({ isActive: true }).sort({
-      state: 1,
-      area: 1,
-    });
-    res.json(activeAreas);
-  } catch (error) {
-    console.error("Error fetching active areas:", error);
-    res.status(500).json({ error: "Failed to fetch active areas" });
-  }
-});
-
-// API endpoint to get areas by state
-app.get("/api/areas/state/:state", async (req, res) => {
-  try {
-    const { state } = req.params;
-    const areas = await Area.find({ state, isActive: true }).sort({ area: 1 });
-    res.json(areas);
-  } catch (error) {
-    console.error("Error fetching areas by state:", error);
-    res.status(500).json({ error: "Failed to fetch areas by state" });
-  }
-});
+// ========== AREAS API ENDPOINTS (DEPRECATED) ==========
+// Old Area (107) endpoints removed. Use /api/area-management/area-b for new AreaB (114) management.
 
 // ========== VEHICLE TYPES API ENDPOINTS ==========
 

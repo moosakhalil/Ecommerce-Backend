@@ -3,7 +3,8 @@ const router = express.Router();
 const Vendor = require("../models/Vendor");
 const Customer = require("../models/customer");
 const Product = require("../models/Product");
-const Area = require("../models/Areas"); // Add Area model
+// Old Area model (107) removed
+const { AreaB, Regency } = require("../models/AreaManagement"); // New AreaB model (114 Delivery Fees)
 
 // ===== VENDOR MANAGEMENT ROUTES =====
 
@@ -156,24 +157,33 @@ router.get("/by-product/:productId", async (req, res) => {
   }
 });
 
-// Get all available areas for service area selection
+// Get all available areas for service area selection (using AreaB - 114 Delivery Fees)
 router.get("/available-areas", async (req, res) => {
   try {
-    console.log("🗺️ Fetching available areas...");
+    console.log("🗺️ Fetching available areas from AreaB (114 Delivery Fees)...");
 
-    const areas = await Area.find({
-      isActive: true,
-    })
-      .select("name displayName truckPrice scooterPrice")
+    const areas = await AreaB.find()
+      .populate({ path: 'regencyId', select: 'name' })
+      .select("name displayName truckPrice scooterPrice regencyId")
       .sort({ displayName: 1 })
       .lean();
 
-    console.log(`✅ Found ${areas.length} available areas`);
+    // Map to include regency name for easier access
+    const areasWithRegency = areas.map(area => ({
+      _id: area._id,
+      name: area.name,
+      displayName: area.displayName || area.name,
+      truckPrice: area.truckPrice || 0,
+      scooterPrice: area.scooterPrice || 0,
+      regencyName: area.regencyId?.name || 'Unknown'
+    }));
+
+    console.log(`✅ Found ${areasWithRegency.length} available areas`);
 
     res.json({
       success: true,
-      areas,
-      count: areas.length,
+      areas: areasWithRegency,
+      count: areasWithRegency.length,
     });
   } catch (error) {
     console.error("❌ Error fetching available areas:", error);
@@ -471,7 +481,7 @@ router.post("/:vendorId/products", async (req, res) => {
   }
 });
 
-// In /routes/vendors.js - fix the addServiceArea endpoint
+// In /routes/vendors.js - fix the addServiceArea endpoint (using AreaB - 114 Delivery Fees)
 router.post("/:vendorId/service-areas", async (req, res) => {
   try {
     const { vendorId } = req.params;
@@ -487,8 +497,8 @@ router.post("/:vendorId/service-areas", async (req, res) => {
       });
     }
 
-    // Validate area exists
-    const area = await Area.findById(areaId);
+    // Validate area exists in AreaB (114 Delivery Fees)
+    const area = await AreaB.findById(areaId).populate({ path: 'regencyId', select: 'name' });
     if (!area) {
       return res.status(404).json({
         error: "Area not found",
@@ -497,9 +507,9 @@ router.post("/:vendorId/service-areas", async (req, res) => {
 
     // FIXED: Use 'area' field instead of 'areaId'
     const areaData = {
-      area: area.displayName, // This matches the vendor schema
-      areaName: area.displayName,
-      deliveryCharge: deliveryCharge || 0,
+      area: area.displayName || area.name, // This matches the vendor schema
+      areaName: area.displayName || area.name,
+      deliveryCharge: deliveryCharge || area.truckPrice || 0,
       estimatedDeliveryTime: estimatedDeliveryTime || "Same day",
       isActive: true,
     };
@@ -507,7 +517,7 @@ router.post("/:vendorId/service-areas", async (req, res) => {
     await vendor.addServiceArea(areaData);
 
     console.log(
-      `✅ Added service area ${area.displayName} to vendor: ${vendor.name}`
+      `✅ Added service area ${area.displayName || area.name} to vendor: ${vendor.name}`
     );
 
     res.json({
@@ -752,8 +762,8 @@ router.get("/orders/all", async (req, res) => {
         // Find assigned vendor if any by checking delivery area against vendor service areas
         let assignedVendor = null;
         if (order.deliveryAddress?.area) {
-          // First, validate that the delivery area exists in our Area model
-          const validArea = await Area.findOne({
+          // First, validate that the delivery area exists in our AreaB model (114 Delivery Fees)
+          const validArea = await AreaB.findOne({
             $or: [
               { name: order.deliveryAddress.area.toLowerCase() },
               {
@@ -762,7 +772,6 @@ router.get("/orders/all", async (req, res) => {
                 },
               },
             ],
-            isActive: true,
           });
 
           if (validArea) {
@@ -771,7 +780,7 @@ router.get("/orders/all", async (req, res) => {
               status: "Available",
               isActive: true,
               "serviceAreas.areaName": {
-                $regex: new RegExp(validArea.displayName, "i"),
+                $regex: new RegExp(validArea.displayName || validArea.name, "i"),
               },
               "serviceAreas.isActive": true,
             }).limit(1);

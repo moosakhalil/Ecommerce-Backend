@@ -23,7 +23,7 @@ const Category = require("../models/Category");
 const Product = require("../models/Product");
 const Customer = require("../models/customer");
 const { processNewOrder } = require("../utils/referralProcessing");
-const Area = require("../models/Areas");
+// Area model removed (deprecated)
 const { Regency, AreaB } = require("../models/AreaManagement");
 const BatchDiscount = require("../models/BatchDiscount");
 const DiscountEligibility = require("../models/DiscountEligibility");
