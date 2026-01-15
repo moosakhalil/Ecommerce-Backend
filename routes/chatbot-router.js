@@ -49,21 +49,11 @@ if (!fs.existsSync(TEMP_DOCS_DIR)) {
   fs.mkdirSync(TEMP_DOCS_DIR, { recursive: true });
   console.log(`📂 Created temp docs directory at ${TEMP_DOCS_DIR}`);
 }
-// MongoDB Connection
-const mongoURI =
-  "mongodb+srv://chatbiz50_db_user:hv2Lr5GNFG3vo0Mt@cluster0.m8czptr.mongodb.net/?appName=Cluster0";
+// NOTE: MongoDB connection is handled in server.js - removed duplicate connection here
 
-mongoose
-  .connect(mongoURI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => console.log("MongoDB connected successfully"))
-  .catch((err) => console.error("MongoDB connection error:", err));
-
-// Start checking for confirmations every 1 minutes
+// Start checking for confirmations every 1 minute
 setInterval(checkAndSendConfirmations, 1 * 60 * 1000);
-console.log("🔄 Enabled automatic confirmation checks every 2 minutes");
+console.log("🔄 Enabled automatic confirmation checks every 1 minute");
 
 // Run initial check
 checkAndSendConfirmations();
@@ -153,15 +143,19 @@ ${content}`;
 }
 
 /**
- * Send a text message via Ultramsg API (with monitoring)
+ * Send a text message via Ultramsg API (with monitoring and retry logic)
+ * Includes automatic retry for transient network errors like ECONNRESET
  */
-async function sendWhatsAppMessage(to, content) {
+async function sendWhatsAppMessage(to, content, retryCount = 0) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000; // 1 second base delay
+  
   try {
     // Clean phone number (remove @ symbols if present)
     const cleanTo = to.replace(/@c\.us|@s\.whatsapp\.net/g, "");
 
     console.log(
-      `📤 Sending message to ${cleanTo}: "${content.substring(0, 50)}..."`
+      `📤 Sending message to ${cleanTo}: "${content.substring(0, 50)}..."${retryCount > 0 ? ` (retry ${retryCount}/${MAX_RETRIES})` : ''}`
     );
 
     const response = await axios.post(
@@ -173,6 +167,7 @@ async function sendWhatsAppMessage(to, content) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
+        timeout: 30000, // 30 second timeout
       }
     );
 
@@ -190,13 +185,30 @@ async function sendWhatsAppMessage(to, content) {
       return { success: false, error: response.data };
     }
   } catch (error) {
+    const errorMessage = error.response?.data || error.message;
+    const isRetryableError = 
+      error.code === 'ECONNRESET' || 
+      error.code === 'ETIMEDOUT' || 
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ENOTFOUND' ||
+      (error.response && error.response.status >= 500);
+    
+    // Retry on transient network errors
+    if (isRetryableError && retryCount < MAX_RETRIES) {
+      const delay = RETRY_DELAY_MS * Math.pow(2, retryCount); // Exponential backoff
+      console.log(`⚠️ Network error (${error.code || error.message}), retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return sendWhatsAppMessage(to, content, retryCount + 1);
+    }
+    
     console.error(
       `❌ Error sending WhatsApp message to ${to}:`,
-      error.response?.data || error.message
+      errorMessage
     );
     return { success: false, error: error.message };
   }
 }
+
 
 /**
  * Send an image with caption via Ultramsg API
@@ -244,7 +256,89 @@ async function sendImageWithCaption(to, imagePath, caption) {
 }
 
 /**
- * Send product images (master + additional images)
+ * Helper function to send image with retry logic
+ * Now properly validates API response
+ */
+async function sendImageWithRetry(to, base64Image, contentType, caption, retryCount = 0) {
+
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000;
+  
+  // Detect actual image type from base64 magic bytes
+  let normalizedType = 'image/jpeg'; // Default
+  if (base64Image.startsWith('/9j/')) {
+    normalizedType = 'image/jpeg'; // JPEG magic bytes
+  } else if (base64Image.startsWith('iVBORw0')) {
+    normalizedType = 'image/png'; // PNG magic bytes
+  } else if (base64Image.startsWith('R0lGOD')) {
+    normalizedType = 'image/gif'; // GIF magic bytes
+  } else {
+    // Fallback to declared content type with normalization
+    normalizedType = contentType?.toLowerCase() || 'image/jpeg';
+    if (normalizedType.includes('jfif') || normalizedType.includes('pjpeg') || normalizedType.includes('pjp')) {
+      normalizedType = 'image/jpeg';
+    } else if (normalizedType.includes('webp') || normalizedType.includes('bmp') || normalizedType.includes('tiff')) {
+      normalizedType = 'image/jpeg';
+    } else if (!['image/jpeg', 'image/png', 'image/gif'].includes(normalizedType)) {
+      normalizedType = 'image/jpeg';
+    }
+  }
+  
+  console.log(`📷 Sending image: type=${normalizedType}, size=${base64Image.length} chars`);
+  
+  try {
+    const formData = new URLSearchParams();
+    formData.append("token", ULTRAMSG_CONFIG.token);
+    formData.append("to", to);
+    formData.append("image", `data:${normalizedType};base64,${base64Image}`);
+    formData.append("caption", caption || "");
+
+
+    const response = await axios.post(
+      `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
+      formData,
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout: 60000, // 60 second timeout for image uploads
+      }
+    );
+    
+    // Check if API actually confirmed delivery
+    if (response.data && response.data.sent === true) {
+      console.log(`✅ Image confirmed sent to ${to}`);
+      return { success: true, data: response.data };
+    } else if (response.data && response.data.sent === "true") {
+      // Sometimes API returns string instead of boolean
+      console.log(`✅ Image confirmed sent to ${to}`);
+      return { success: true, data: response.data };
+    } else {
+      // API returned but didn't confirm delivery
+      console.error(`⚠️ Image API response uncertain:`, JSON.stringify(response.data));
+      throw new Error(`Image not confirmed sent: ${JSON.stringify(response.data)}`);
+    }
+  } catch (error) {
+    const isRetryableError = 
+      error.code === 'ECONNRESET' || 
+      error.code === 'ETIMEDOUT' || 
+      error.code === 'ECONNREFUSED' ||
+      error.message?.includes('not confirmed') ||
+      (error.response && error.response.status >= 500);
+    
+    if (isRetryableError && retryCount < MAX_RETRIES) {
+      const delay = RETRY_DELAY_MS * Math.pow(2, retryCount);
+      console.log(`⚠️ Image upload error (${error.code || error.message}), retrying in ${delay}ms... (${retryCount + 1}/${MAX_RETRIES})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return sendImageWithRetry(to, base64Image, contentType, caption, retryCount + 1);
+    }
+    throw error;
+  }
+}
+
+
+/**
+ * Send product images (master + additional images) with retry logic
  * @param {string} to - Recipient phone number
  * @param {Object} product - Product object with masterImage and moreImages
  * @param {string} caption - Caption for the first image
@@ -284,57 +378,29 @@ async function sendProductImages(to, product, caption) {
       return;
     }
 
-    // Send first image with caption
+    // Send first image with caption (with retry)
     const firstImage = images[0];
     const base64 = firstImage.buffer.toString("base64");
-    const formData = new URLSearchParams();
-    formData.append("token", ULTRAMSG_CONFIG.token);
-    formData.append("to", cleanTo);
-    formData.append("image", `data:${firstImage.contentType};base64,${base64}`);
-    formData.append("caption", caption);
-
-    await axios.post(
-      `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
-      formData,
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
-    );
-
+    await sendImageWithRetry(cleanTo, base64, firstImage.contentType, caption);
     console.log(`📸 Sent image 1/${images.length}`);
 
-    // Send additional images without caption (with small delay)
+    // Send additional images without caption (with small delay and retry)
     for (let i = 1; i < images.length; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1000)); // 1 second delay
       const img = images[i];
       const imgBase64 = img.buffer.toString("base64");
-      const imgFormData = new URLSearchParams();
-      imgFormData.append("token", ULTRAMSG_CONFIG.token);
-      imgFormData.append("to", cleanTo);
-      imgFormData.append("image", `data:${img.contentType};base64,${imgBase64}`);
-      imgFormData.append("caption", `Image ${i + 1}/${images.length}`);
-
-      await axios.post(
-        `${ULTRAMSG_CONFIG.baseURL}/${ULTRAMSG_CONFIG.instanceId}/messages/image`,
-        imgFormData,
-        {
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-        }
-      );
-
+      await sendImageWithRetry(cleanTo, imgBase64, img.contentType, `Image ${i + 1}/${images.length}`);
       console.log(`📸 Sent image ${i + 1}/${images.length}`);
     }
 
     console.log(`✅ Sent all ${images.length} product images`);
   } catch (error) {
     console.error("❌ Error sending product images:", error);
+    // Fallback to text only message
     await sendWhatsAppMessage(to, caption);
   }
 }
+
 
 /**
  * Download media from Ultramsg
@@ -494,13 +560,24 @@ async function downloadMedia(mediaUrl, filename) {
 router.post("/webhook", express.json(), async (req, res) => {
   try {
     console.log("=== WEBHOOK RECEIVED ===");
-    console.log("Webhook data:", JSON.stringify(req.body, null, 2));
-
+    
     const data = req.body;
 
     // Handle UltraMsg webhook structure
     if (data.event_type === "message_received") {
       const messageData = data.data;
+      
+      // ========== MESSAGE DEDUPLICATION ==========
+      // Prevent duplicate webhook processing
+      const { hasProcessed, generateMessageId } = require("../utils/messageTracker");
+      const msgId = generateMessageId(messageData);
+      
+      if (hasProcessed(msgId)) {
+        console.log(`⏭️ Skipping duplicate webhook for: ${messageData.from}`);
+        return res.status(200).json({ status: "duplicate_skipped" });
+      }
+      // ============================================
+      
       const message = {
         from: messageData.from,
         body: messageData.body || "",
@@ -518,6 +595,7 @@ router.post("/webhook", express.json(), async (req, res) => {
         "Timestamp:",
         new Date(message.timestamp * 1000).toISOString()
       );
+
 
       // Handle different message types
       if (messageData.media) {
@@ -763,52 +841,7 @@ function cleanNumberForUltraMSG(phone) {
 
   return clean;
 }
-async function checkAndSendConfirmations() {
-  try {
-    console.log("🔍 Checking for orders needing confirmation...");
-
-    // Find all customers with confirmed orders
-    const customers = await Customer.find({
-      currentOrderStatus: "order-confirmed",
-      latestOrderId: { $exists: true },
-    });
-
-    console.log(`📊 Found ${customers.length} customers needing confirmation`);
-
-    for (const customer of customers) {
-      try {
-        console.log(`🔄 Processing customer: ${customer._id}`);
-
-        // Get their latest order
-        const order = customer.orderHistory.find(
-          (o) => o.orderId === customer.latestOrderId
-        );
-
-        if (!order) {
-          console.error(
-            `❌ Order ${customer.latestOrderId} not found for customer ${customer._id}`
-          );
-          continue;
-        }
-
-        // Send confirmation
-        await sendOrderConfirmation(order.orderId, customer);
-
-        // Update status to avoid resending
-        await Customer.updateOne(
-          { _id: customer._id },
-          { $set: { currentOrderStatus: "order-processed" } }
-        );
-
-        console.log(`✅ Confirmation sent for order ${order.orderId}`);
-      } catch (err) {
-        console.error(`❌ Failed to process customer ${customer._id}:`, err);
-      }
-    }
-  } catch (err) {
-    console.error("❌ Error in checkAndSendConfirmations:", err);
-  }
-}
+// NOTE: checkAndSendConfirmations is defined later at line ~960 with improved tracking
 
 // Helper function to get all regencies for step 1 selection
 const getAllRegencies = async () => {
@@ -2095,11 +2128,29 @@ async function processChatMessage(phoneNumber, text, message) {
             break;
 
           case "4":
-            // Learn about referral program - update state and immediately process
-            await customer.updateConversationState("referral");
-            // Then immediately process the state
-            await processChatMessage(phoneNumber, "", message);
+            // Learn about referral program - send referral intro directly
+            // FIX: Removed recursive processChatMessage call that caused duplicate messages
+            const canSeeCommission = customer.foremanStatus?.isCommissionEligible || false;
+            let referralIntroMessage = "🎉 Welcome to our Referral Program!\n\n";
+            
+            if (canSeeCommission) {
+              const commissionRate = customer.foremanStatus?.commissionRate || 5;
+              const availableCommission = customer.commissionTracking?.availableCommission || 0;
+              referralIntroMessage += `💰 You're eligible to earn ${commissionRate}% commission!\n`;
+              referralIntroMessage += `💼 Available commission: Rs. ${availableCommission.toFixed(2)}\n\n`;
+            }
+            
+            referralIntroMessage +=
+              `🎥 Share videos with friends and earn rewards!\n\n` +
+              `📱 Please record and send your referral video now\n\n` +
+              `📏 Max size: 15MB\n` +
+              `⏱️ Keep it under 1 minute for best results!`;
+            
+            await sendWhatsAppMessage(phoneNumber, referralIntroMessage);
+            await sendWhatsAppMessage(phoneNumber, "📱 Send your video now or type '0' to return to main menu");
+            await customer.updateConversationState("create_video");
             break;
+
           case "5":
             // Support - Updated to match new comprehensive support system
             await customer.updateConversationState("support");
@@ -2401,32 +2452,45 @@ async function processChatMessage(phoneNumber, text, message) {
             return sendMainMenu(phoneNumber, customer);
           }
 
-          // if it's a Child product, go ask for weight
-          if (product.productType === "Child") {
-            // build weight options from all child variants under the same parent
-            const siblingVariants = await Product.find(
-              {
-                parentProduct: product.parentProduct,
-                productType: "Child",
-                visibility: "Public",
-              },
-              "varianceName NormalPrice specifications.weight"
-            );
-
-            let weightMsg = `Please pick the weight option :\n\n`;
-            siblingVariants.forEach((v, i) => {
-              const w = v.specifications?.[0]?.weight ?? "N/A";
-              const price = v.NormalPrice ?? "N/A";
-              weightMsg += `${i + 1}. ${w}kg    -${price}rp\n`;
+          // if it's a Child product OR has specifications, show weight options
+          if (product.productType === "Child" || (product.specifications && product.specifications.length > 0)) {
+            // FIX: Use this specific product's specifications, NOT sibling variants
+            const specifications = product.specifications || [];
+            
+            if (specifications.length === 0) {
+              // No specifications, go straight to quantity
+              await customer.updateConversationState("select_quantity");
+              return sendWhatsAppMessage(
+                phoneNumber,
+                `How many *${product.productName}* would you like? (Enter a number)`
+              );
+            }
+            
+            // Build weight options from THIS product's specifications
+            let weightMsg = `Please pick the weight option for *${product.productName}*:\n\n`;
+            specifications.forEach((spec, i) => {
+              const w = spec.weight ?? spec.size ?? spec.variant ?? "Option";
+              const price = spec.price ?? product.NormalPrice ?? "N/A";
+              weightMsg += `${i + 1}. ${w} - Rp ${price}\n`;
             });
+            weightMsg += `\nType the number of your choice or 0 to go back.`;
 
-            customer.contextData.weightOptions = siblingVariants.map((v) =>
-              v._id.toString()
+            // Store the specifications for selection as JSON strings (schema expects [String])
+            customer.contextData.weightOptions = specifications.map((spec, i) => 
+              JSON.stringify({
+                index: i,
+                weight: spec.weight ?? spec.size ?? spec.variant,
+                price: spec.price ?? product.NormalPrice,
+                productId: product._id.toString()
+              })
             );
+            customer.contextData.selectedProductId = product._id.toString();
             await customer.save();
             await customer.updateConversationState("select_weight");
             return sendWhatsAppMessage(phoneNumber, weightMsg);
+
           }
+
 
           // otherwise it's a Normal (no‐weight) product: straight to quantity
           await customer.updateConversationState("select_quantity");
@@ -2456,52 +2520,60 @@ async function processChatMessage(phoneNumber, text, message) {
 
       case "select_weight": {
         const idxW = parseInt(text, 10) - 1;
-        const weights = customer.contextData.weightOptions || [];
+        const weightOptionsRaw = customer.contextData.weightOptions || [];
+        // Parse JSON strings (stored as strings because schema expects [String])
+        const weightOptions = weightOptionsRaw.map(opt => {
+          try {
+            return typeof opt === 'string' ? JSON.parse(opt) : opt;
+          } catch {
+            return opt;
+          }
+        });
 
-        if (idxW >= 0 && idxW < weights.length) {
-          const chosenId = weights[idxW];
-          const chosenVar = await Product.findById(chosenId);
+        if (idxW >= 0 && idxW < weightOptions.length) {
+          const chosenOption = weightOptions[idxW];
+          const product = await Product.findById(customer.contextData.selectedProductId || customer.contextData.productId);
+          
+          if (!product) {
+            await sendWhatsAppMessage(phoneNumber, "Sorry, couldn't find that product. Let's start over.");
+            return sendMainMenu(phoneNumber, customer);
+          }
 
-          customer.contextData.productId = chosenId;
-          customer.contextData.selectedWeight = chosenVar.varianceName;
+          // Store selected weight and price for cart
+          customer.contextData.selectedWeight = chosenOption.weight || chosenOption;
+          customer.contextData.selectedPrice = chosenOption.price || product.NormalPrice;
           await customer.save();
 
           await sendWhatsAppMessage(
             phoneNumber,
-            `You have chosen ${chosenVar.varianceName} pack. Great choice!`
+            `You have chosen *${chosenOption.weight || chosenOption}* option at Rp ${chosenOption.price || product.NormalPrice}. Great choice!`
           );
           await customer.updateConversationState("select_quantity");
           return sendWhatsAppMessage(
             phoneNumber,
-            "How many bags would you like to order? Enter only in digits."
+            `How many *${product.productName}* would you like to order? (Enter a number)`
           );
         }
+
 
         if (text === "0") {
           // cancel weight, back to product details
           await customer.updateConversationState("product_details");
-          const prod = await Product.findById(customer.contextData.productId);
+          const prod = await Product.findById(customer.contextData.selectedProductId || customer.contextData.productId);
           return sendProductDetails(phoneNumber, customer, prod);
         }
 
-        // Build the exact same weight menu you showed
-        let msg = "Please select the weight option:\n\n";
-        const siblingVariants = await Product.find({
-          parentProduct: customer.contextData.parentProduct,
-          productType: "Child",
-          visibility: "Public",
+        // Invalid input - show options again
+        const product = await Product.findById(customer.contextData.selectedProductId || customer.contextData.productId);
+        let msg = `Please select a valid weight option for *${product?.productName || 'this product'}*:\n\n`;
+        weightOptions.forEach((opt, i) => {
+          msg += `${i + 1}. ${opt.weight} - Rp ${opt.price}\n`;
         });
-        siblingVariants.forEach((v, i) => {
-          const w = v.specifications?.[0]?.weight ?? "";
-          const p = v.NormalPrice ?? 0;
-          msg += `${i + 1}- ${w} pack - Rp ${p}\n`;
-        });
+        msg += `\nType the number of your choice or 0 to go back.`;
 
-        return sendWhatsAppMessage(
-          phoneNumber,
-          msg.trim() // remove trailing newline
-        );
+        return sendWhatsAppMessage(phoneNumber, msg);
       }
+
 
       case "select_quantity": {
         const buyQty = parseInt(text, 10);
@@ -12564,8 +12636,7 @@ async function sendMainMenu(phoneNumber, customer) {
 `
   );
 
-  // Wait a moment to simulate natural conversation flow
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // PERFORMANCE FIX: Removed artificial 500ms delay that slowed response time
 
   const menuText =
     "Main Menu:\n" +
