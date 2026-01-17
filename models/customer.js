@@ -8,6 +8,7 @@ const ORDER_STATUSES = [
   "order-confirmed",
   "order-not-picked",
   "issue-customer",
+  "customer-issues",
   "customer-confirmed",
   "order-refunded",
   "picking-order",
