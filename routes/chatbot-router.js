@@ -3214,7 +3214,7 @@ async function processChatMessage(phoneNumber, text, message) {
       case "cart_confirm_empty":
         if (text === "1") {
           // Empty the cart using the new method
-          await customer.clearCart();
+          await customer.emptyCart();
 
           await sendWhatsAppMessage(
             phoneNumber,
