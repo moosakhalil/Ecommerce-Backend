@@ -13258,17 +13258,28 @@ function generateOrderHistoryList(customer) {
     message += "You haven't placed any orders yet.\n";
     return message;
   } else {
-    // Sort orders by date, newest first
+    // Sort orders by date, newest first (handle missing dates)
     const sortedOrders = [...customer.orderHistory].sort((a, b) => {
-      return new Date(b.orderDate) - new Date(a.orderDate);
+      const dateA = a.orderDate || a.createdAt || 0;
+      const dateB = b.orderDate || b.createdAt || 0;
+      return new Date(dateB) - new Date(dateA);
     });
 
     // Display orders from newest to oldest, with descending numbering
     sortedOrders.forEach((order, index) => {
       const orderNumber = sortedOrders.length - index; // Reverse numbering
       message += `${orderNumber}. Order #${order.orderId}\n`;
-      message += `   Date: ${new Date(order.orderDate).toLocaleDateString()}\n`;
-      message += `   Status: ${order.status}\n`;
+      
+      // Handle missing orderDate - try orderDate, createdAt, or show N/A
+      const orderDate = order.orderDate || order.createdAt;
+      const formattedDate = orderDate && !isNaN(new Date(orderDate).getTime()) 
+        ? new Date(orderDate).toLocaleDateString() 
+        : "N/A";
+      message += `   Date: ${formattedDate}\n`;
+      
+      // Handle missing status - show a friendly default
+      const orderStatus = order.status || "Pending";
+      message += `   Status: ${orderStatus}\n`;
 
       // Add delivery location info
       if (order.deliveryLocation) {
