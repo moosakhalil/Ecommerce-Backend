@@ -13254,12 +13254,18 @@ async function goToCart(phoneNumber, customer) {
 function generateOrderHistoryList(customer) {
   let message = "📦 *My orders/ History* 📦\n\n";
 
-  if (!customer.orderHistory || customer.orderHistory.length === 0) {
+  // Use shoppingHistory (has proper schema with orderDate and status) 
+  // Fallback to orderHistory if shoppingHistory is empty
+  const ordersSource = (customer.shoppingHistory && customer.shoppingHistory.length > 0) 
+    ? customer.shoppingHistory 
+    : customer.orderHistory;
+
+  if (!ordersSource || ordersSource.length === 0) {
     message += "You haven't placed any orders yet.\n";
     return message;
   } else {
     // Sort orders by date, newest first (handle missing dates)
-    const sortedOrders = [...customer.orderHistory].sort((a, b) => {
+    const sortedOrders = [...ordersSource].sort((a, b) => {
       const dateA = a.orderDate || a.createdAt || 0;
       const dateB = b.orderDate || b.createdAt || 0;
       return new Date(dateB) - new Date(dateA);
