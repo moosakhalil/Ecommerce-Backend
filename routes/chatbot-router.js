@@ -10166,9 +10166,86 @@ Don't worry — the driver will reach you and deliver the products safely..` +
 
       // Enhanced order history with shopping history schema
       case "order_history":
-        if (customer.shoppingHistory && customer.shoppingHistory.length > 0) {
-          await customer.updateConversationState("order_history");
-
+        // Handle order number selection
+        const orderInputNum = parseInt(text);
+        
+        // Check if user is selecting an order by number
+        if (!isNaN(orderInputNum) && orderInputNum > 0) {
+          // Use shoppingHistory if available, fallback to orderHistory
+          const ordersToCheck = (customer.shoppingHistory && customer.shoppingHistory.length > 0) 
+            ? customer.shoppingHistory 
+            : customer.orderHistory;
+          
+          if (ordersToCheck && ordersToCheck.length > 0 && orderInputNum <= ordersToCheck.length) {
+            // Sort orders by date (newest first)
+            const sortedOrders = [...ordersToCheck].sort((a, b) => {
+              return new Date(b.orderDate) - new Date(a.orderDate);
+            });
+            
+            const orderIndex = orderInputNum - 1;
+            const order = sortedOrders[orderIndex];
+            
+            if (order) {
+              // Show order details
+              let orderDetails = `📦 *Order #${order.orderId}* 📦\n\n`;
+              
+              const orderDate = new Date(order.orderDate);
+              orderDetails += `📅 Date: ${orderDate.toLocaleDateString()}\n`;
+              orderDetails += `📊 Status: ${order.status}\n`;
+              
+              if (order.deliveryLocation) {
+                orderDetails += `📍 Location: ${order.deliveryLocation}\n`;
+              }
+              
+              orderDetails += `💳 Payment: ${order.paymentStatus || 'pending'}\n\n`;
+              
+              orderDetails += `📝 *Items Ordered:*\n`;
+              
+              if (order.items && order.items.length > 0) {
+                order.items.forEach((item, i) => {
+                  orderDetails += `${i + 1}. ${item.productName}`;
+                  if (item.weight) orderDetails += ` (${item.weight})`;
+                  orderDetails += `\n   Qty: ${item.quantity} × ${formatRupiah(item.price)} = ${formatRupiah(item.totalPrice)}\n`;
+                });
+              }
+              
+              orderDetails += `\n💰 *Total: ${formatRupiah(order.totalAmount)}*\n\n`;
+              orderDetails += `Type 0 to return to main menu or 'back' to view order list.`;
+              
+              await customer.updateConversationState("order_details");
+              await sendWhatsAppMessage(phoneNumber, orderDetails);
+              break;
+            }
+          }
+          
+          // Order number out of range
+          await sendWhatsAppMessage(
+            phoneNumber,
+            "❌ Invalid order number. Please select a valid number from the list."
+          );
+          // Re-show the order list
+          const ordersForList = (customer.shoppingHistory && customer.shoppingHistory.length > 0)
+            ? customer.shoppingHistory 
+            : customer.orderHistory;
+          if (ordersForList && ordersForList.length > 0) {
+            const orderListMsg = generateEnhancedOrderHistoryList(customer);
+            await sendWhatsAppMessage(phoneNumber, orderListMsg);
+          }
+          break;
+        }
+        
+        // Handle 'back' to return to main menu
+        if (text.toLowerCase() === 'back') {
+          await sendMainMenu(phoneNumber, customer);
+          break;
+        }
+        
+        // Otherwise show the order history list
+        const ordersAvailable = (customer.shoppingHistory && customer.shoppingHistory.length > 0)
+          ? customer.shoppingHistory 
+          : customer.orderHistory;
+          
+        if (ordersAvailable && ordersAvailable.length > 0) {
           const orderListMessage = generateEnhancedOrderHistoryList(customer);
           await sendWhatsAppMessage(phoneNumber, orderListMessage);
 
