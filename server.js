@@ -383,6 +383,10 @@ app.use("/api/discount-window-config", discountWindowConfigRoutes);
 const chatbotMonitorRoutes = require("./routes/chatbotMonitorRoutes");
 app.use("/api/chatbot-monitor", chatbotMonitorRoutes);
 
+// Chatbot Message Viewer routes (Page 115 - View all chatbot messages with code locations)
+const chatbotMessageViewerRoutes = require("./routes/chatbotMessageViewerRoutes");
+app.use("/api/chatbot-message-viewer", chatbotMessageViewerRoutes);
+
 // ========== NEW AUTH ROUTES ==========
 app.use("/api/auth", authRouter);
 app.use("/api/user-admin", adminRouter); // Changed path to avoid conflict
