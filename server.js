@@ -375,6 +375,10 @@ app.use("/api/tracking", productTrackingRoutes);
 const batchDiscountRoutes = require("./routes/batchDiscountRoutes");
 app.use("/api/batch-discounts", batchDiscountRoutes);
 
+// Discount Window Config routes (Page 74 - Discount Policies)
+const discountWindowConfigRoutes = require("./routes/discountWindowConfigRoutes");
+app.use("/api/discount-window-config", discountWindowConfigRoutes);
+
 // Chatbot Monitor routes (for testing/verification)
 const chatbotMonitorRoutes = require("./routes/chatbotMonitorRoutes");
 app.use("/api/chatbot-monitor", chatbotMonitorRoutes);
