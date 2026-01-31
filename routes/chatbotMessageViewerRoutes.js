@@ -407,7 +407,7 @@ const CHATBOT_MESSAGES = [
     key: "shopping_categories_header",
     category: "shopping",
     displayName: "Categories List Header",
-    content: "What are you looking for? This is the main shopping list\\n\\nPlease enter the category name or number to view its details.\\nType 0 to return to main menu or type \"View cart\" to view your cart",
+    content: "What are you looking for? This is the main shopping list\n\nPlease enter the category name or number to view its details.\nType 0 to return to main menu or type 'View cart' to view your cart",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 1785
   },
@@ -459,7 +459,7 @@ const CHATBOT_MESSAGES = [
     key: "weight_selection_prompt",
     category: "product",
     displayName: "Weight Selection Prompt",
-    content: "Please pick the weight option for *{{productName}}*:\\n\\n{{options}}\\nType the number of your choice or 0 to go back.",
+    content: "Please pick the weight option for *{{productName}}*:\n\n{{options}}\nType the number of your choice or 0 to go back.",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 2470
   },
@@ -503,7 +503,7 @@ const CHATBOT_MESSAGES = [
     key: "cart_item_added",
     category: "cart",
     displayName: "Item Added to Cart",
-    content: "added to your cart:\\n{{productName}}\\n{{quantity}} bags\\nfor {{total}}",
+    content: "added to your cart:\n{{productName}}\n{{quantity}} bags\nfor {{total}}",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 2614
   },
@@ -511,7 +511,7 @@ const CHATBOT_MESSAGES = [
     key: "cart_next_action",
     category: "cart",
     displayName: "Post Add to Cart Options",
-    content: "\\nWhat do you want to do next?\\n1- View cart\\n2- Proceed to pay\\n3- Shop more (return to shopping list)\\n0- Main menu",
+    content: "\nWhat do you want to do next?\n1- View cart\n2- Proceed to pay\n3- Shop more (return to shopping list)\n0- Main menu",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 2624
   },
@@ -577,7 +577,7 @@ const CHATBOT_MESSAGES = [
     key: "checkout_delivery_options",
     category: "checkout",
     displayName: "Delivery Speed Options",
-    content: "1. Normal Delivery\\n2. Speed Delivery\\n3. Early Morning Delivery\\n4. Eco Delivery\\n5. Self Pickup",
+    content: "1. Normal Delivery\n2. Speed Delivery\n3. Early Morning Delivery\n4. Eco Delivery\n5. Self Pickup",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 3308
   },
@@ -609,7 +609,7 @@ const CHATBOT_MESSAGES = [
     key: "checkout_pickup_date",
     category: "checkout",
     displayName: "Pickup Date Options",
-    content: "📅 When would you like to pick up your order?\\n\\n1. Today\\n2. Tomorrow\\n3. Later (choose from calendar)",
+    content: "📅 When would you like to pick up your order?\n\n1. Today\n2. Tomorrow\n3. Later (choose from calendar)",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 3433
   },
@@ -693,7 +693,7 @@ const CHATBOT_MESSAGES = [
     key: "checkout_address_selected",
     category: "checkout",
     displayName: "Address Selected Confirmation",
-    content: "✅ Address selected: {{nickname}}\\nArea: {{area}}\\nDelivery charge: {{charge}}",
+    content: "✅ Address selected: {{nickname}}\nArea: {{area}}\nDelivery charge: {{charge}}",
     filePath: "backend/routes/chatbot-router.js",
     lineNumber: 3781
   },
